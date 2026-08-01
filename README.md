@@ -22,7 +22,7 @@
 - **Backend:** Cloudflare Pages Functions (`/functions/api/*`)
 - **Storage:** Cloudflare R2 (3D model cache), Firebase Storage (vehicle photos)
 - **Database & Auth:** Firebase Firestore + Firebase Auth
-- **AI:** Anthropic Claude Sonnet (streaming, multimodal, prompt caching)
+- **AI:** Anthropic Claude Opus 5 (streaming, multimodal, adaptive thinking)
 - **3D pipeline:** Tripo3D image-to-model API → R2 mirror for permanent URLs
 - **Hosting:** Cloudflare Pages
 
@@ -52,6 +52,7 @@ Create `carbot/.env` (this file is gitignored). The dev proxy in `src/setupProxy
 ```bash
 # ── Server-side secrets (used by the dev proxy in src/setupProxy.js) ──
 CLAUDE_API_KEY=sk-ant-…
+AUTODEV_API_KEY=…        # vehicle listings for "Find Me a Car" — see below
 TRIPO_KEY=tsk_…
 VINAUDIT_KEY=…           # optional — VIN-image lookups
 VINCARIO_KEY=…           # optional — VIN decode
@@ -68,6 +69,24 @@ REACT_APP_FIREBASE_MEASUREMENT_ID=G-…
 ```
 
 > Get the Firebase web config from **Firebase Console → Project Settings → General → Your apps → Web app → SDK setup**.
+
+#### Vehicle listings (`AUTODEV_API_KEY`)
+
+"Find Me a Car" searches live US dealer inventory through
+[Auto.dev](https://auto.dev)'s Vehicle Listings API. Sign up, copy the key from
+the dashboard, and set `AUTODEV_API_KEY`. The Starter tier is free — 1,000 calls
+a month, no card — which the panel is built around: searches are debounced,
+superseded requests are aborted, and the mileage / source / trim filters refine
+the already-fetched page instead of re-querying.
+
+Without the key the panel renders a "listings aren't connected yet" state. It
+deliberately does **not** fall back to sample data — showing invented inventory
+to someone shopping for a car is worse than showing nothing.
+
+Map pins come from ZIP centroids resolved through
+[Zippopotam.us](https://zippopotam.us) (free, no key), cached at the edge; the
+"use my location" button reverse-geocodes via BigDataCloud's free client
+endpoint. Neither needs configuring.
 
 ### 4. Set up Firebase
 
@@ -109,7 +128,7 @@ Opens [http://localhost:3000](http://localhost:3000). The dev proxy starts autom
 This project deploys to Cloudflare Pages with a connected R2 bucket. Push to your fork, then in the Cloudflare dashboard:
 
 1. Pages → Create project → connect your repo, build command `npm run build`, output `build/`.
-2. Settings → Environment variables → add the **server-side secrets** as encrypted Secrets (`CLAUDE_API_KEY`, `TRIPO_KEY`, etc.). The Firebase `REACT_APP_*` values are already in [`wrangler.toml`](./wrangler.toml).
+2. Settings → Environment variables → add the **server-side secrets** as encrypted Secrets (`CLAUDE_API_KEY`, `AUTODEV_API_KEY`, `TRIPO_KEY`, etc.). The Firebase `REACT_APP_*` values are already in [`wrangler.toml`](./wrangler.toml).
 3. R2 → create a bucket named `vincritiq-models`. The binding is declared in `wrangler.toml`.
 4. Settings → Custom domains → point your domain at the Pages project.
 

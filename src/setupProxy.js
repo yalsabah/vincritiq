@@ -24,6 +24,7 @@ const STRIPE_SECRET_KEY     = pickEnv('STRIPE_SECRET_KEY');
 const PUBLIC_BASE_URL       = pickEnv('PUBLIC_BASE_URL') || 'http://localhost:3000';
 const NVIDIA_TRELLIS_KEY    = pickEnv('NVIDIA_TRELLIS_API_KEY', 'NVIDIA_API_KEY');
 const REPLICATE_API_TOKEN   = pickEnv('REPLICATE_API_TOKEN');
+const AUTODEV_KEY           = pickEnv('AUTODEV_API_KEY', 'AUTODEV_KEY');
 
 // Startup banner — confirms which keys actually loaded into this process.
 // Prints first/last 4 chars + length so you can eyeball it without leaking
@@ -43,6 +44,7 @@ console.log('  VINCARIO_SECRET:', fingerprint(VINCARIO_SECRET));
 console.log('  STRIPE_SECRET  :', fingerprint(STRIPE_SECRET_KEY));
 console.log('  NVIDIA_TRELLIS :', fingerprint(NVIDIA_TRELLIS_KEY));
 console.log('  REPLICATE_TOKEN:', fingerprint(REPLICATE_API_TOKEN));
+console.log('  AUTODEV_KEY    :', fingerprint(AUTODEV_KEY));
 
 const stripBrowserHeaders = (proxyReq) => {
   proxyReq.removeHeader('origin');
@@ -65,10 +67,17 @@ module.exports = function (app) {
       target: 'https://api.anthropic.com',
       changeOrigin: true,
       pathRewrite: { '^/api/claude': '/v1/messages' },
-      onProxyReq: (proxyReq) => {
+      onProxyReq: (proxyReq, req) => {
         stripBrowserHeaders(proxyReq);
         if (CLAUDE_KEY) proxyReq.setHeader('x-api-key', CLAUDE_KEY);
         proxyReq.setHeader('anthropic-version', '2023-06-01');
+        // Mirror functions/api/claude.js: the client declares which betas its
+        // request body needs via x-anthropic-beta, and the proxy promotes it
+        // to the real header. Without this, a body field gated behind a beta
+        // (e.g. `fallbacks`) 400s in dev while working in production.
+        const betas = req.headers['x-anthropic-beta'];
+        if (betas) proxyReq.setHeader('anthropic-beta', betas);
+        proxyReq.removeHeader('x-anthropic-beta');
       },
       onProxyRes: (proxyRes, req) => {
         if (proxyRes.statusCode >= 400) {
@@ -720,6 +729,198 @@ module.exports = function (app) {
       res.json({ images, ymmt: data?.ymmt || null });
     } catch (err) {
       res.status(502).json({ error: String(err?.message || err) });
+    }
+  });
+
+  // ── Vehicle listings (dev) ────────────────────────────────────────
+  // Mirrors functions/api/listings.js. Kept deliberately close to the
+  // Worker version — same normalization paths, same ZIP geocoding, same
+  // error codes — so a listing that renders in dev renders in production.
+  // The only differences are a plain in-process Map for the geocode cache
+  // (no Cloudflare Cache API here) and CJS instead of ESM.
+  const AUTODEV_URL = 'https://api.auto.dev/listings';
+  const zipCache = new Map();
+
+  const geocodeZipDev = async (zip) => {
+    const clean = String(zip || '').trim().slice(0, 5);
+    if (!/^\d{5}$/.test(clean)) return null;
+    if (zipCache.has(clean)) return zipCache.get(clean);
+    let resolved = null;
+    try {
+      const r = await fetch(`https://api.zippopotam.us/us/${clean}`);
+      if (r.ok) {
+        const d = await r.json();
+        const p = Array.isArray(d?.places) ? d.places[0] : null;
+        const lat = Number(p?.latitude);
+        const lng = Number(p?.longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) {
+          resolved = { lat, lng, city: p['place name'] || null, state: p['state abbreviation'] || null };
+        }
+      }
+    } catch { /* leave null — the card just won't get a pin */ }
+    zipCache.set(clean, resolved);
+    return resolved;
+  };
+
+  const toNum = (v) => {
+    if (v == null) return null;
+    const n = typeof v === 'number' ? v : Number(String(v).replace(/[^0-9.]/g, ''));
+    return Number.isFinite(n) ? n : null;
+  };
+
+  // `location` is [lng, lat] (GeoJSON order, not Leaflet's), is only populated
+  // when the query is ZIP-scoped, and is [0, 0] otherwise. See the matching
+  // comment in functions/api/listings.js.
+  const readLoc = (raw) => {
+    const loc = raw && raw.location;
+    if (!Array.isArray(loc) || loc.length < 2) return { lat: null, lng: null };
+    const lng = toNum(loc[0]);
+    const lat = toNum(loc[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { lat: null, lng: null };
+    if (lat === 0 && lng === 0) return { lat: null, lng: null };
+    return { lat, lng };
+  };
+
+  // `vdp` is sometimes a bare fragment ("#-5388555364916837171") rather than a
+  // URL; as an <a href> that resolves against our own origin and reopens the
+  // app. Mirrors safeListingUrl in functions/api/listings.js.
+  const safeUrl = (v) => {
+    if (typeof v !== 'string' || !/^https?:\/\//i.test(v.trim())) return null;
+    try {
+      const u = new URL(v.trim());
+      return u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : null;
+    } catch { return null; }
+  };
+
+  const normalizeDev = (raw) => {
+    const vehicle = (raw && raw.vehicle) || {};
+    const retail = (raw && (raw.retailListing || raw.wholesaleListing)) || {};
+    const vin = (raw && raw.vin) || vehicle.vin;
+    if (!vin) return null;
+
+    const dealerName = typeof retail.dealer === 'string' ? retail.dealer : retail.dealer && retail.dealer.name;
+    const n = String(dealerName || '').toLowerCase();
+    const source = n.includes('carmax') ? 'carmax'
+      : n.includes('carvana') ? 'carvana'
+      : n.includes('private') ? 'private'
+      : 'dealer';
+    const { lat, lng } = readLoc(raw);
+
+    return {
+      vin: String(vin).toUpperCase(),
+      year: toNum(vehicle.year),
+      make: vehicle.make || null,
+      model: vehicle.model || null,
+      trim: vehicle.trim || vehicle.series || null,
+      price: toNum(retail.price),
+      mileage: toNum(retail.miles),
+      exteriorColor: vehicle.exteriorColor || null,
+      condition: retail.used === false ? 'new' : 'used',
+      cpo: Boolean(retail.cpo),
+      photos: retail.primaryImage ? [retail.primaryImage] : [],
+      dealer: { name: dealerName || 'Dealer', source, city: null, state: null, lat, lng },
+      listingUrl: safeUrl(retail.vdp),
+      carfaxUrl: retail.carfaxUrl || null,
+    };
+  };
+
+  app.get('/api/listings', async (req, res) => {
+    if (!AUTODEV_KEY) {
+      return res.status(503).json({
+        error: 'listings_not_configured',
+        message:
+          'Vehicle listings need an Auto.dev API key. Create one free at https://auto.dev ' +
+          '(1,000 calls/month) and add AUTODEV_API_KEY to .env, then restart npm start.',
+      });
+    }
+
+    const authHeaders = { Authorization: `Bearer ${AUTODEV_KEY}`, 'Content-Type': 'application/json' };
+
+    // Exact-VIN lookup uses the single-listing endpoint.
+    const vinQuery = String(req.query.vin || '').toUpperCase();
+    if (/^[A-HJ-NPR-Z0-9]{17}$/.test(vinQuery)) {
+      try {
+        const r = await fetch(`${AUTODEV_URL}/${encodeURIComponent(vinQuery)}`, { headers: authHeaders });
+        if (r.status === 404) {
+          return res.json({ listings: [], origin: null, page: 1, total: 0, hasMore: false });
+        }
+        if (!r.ok) {
+          return res.status(502).json({ error: 'listings_upstream_error', message: `Auto.dev returned ${r.status}.` });
+        }
+        const b = await r.json().catch(() => null);
+        const one = normalizeDev(b?.data || b);
+        const listings = one ? [one] : [];
+        return res.json({ listings, origin: null, page: 1, total: listings.length, hasMore: false });
+      } catch (err) {
+        return res.status(502).json({ error: 'listings_upstream_unreachable', message: String(err?.message || err) });
+      }
+    }
+
+    const p = new URLSearchParams();
+    p.set('limit', '20');
+    p.set('includes', 'total'); // match count is opt-in
+    const page = Math.max(1, Number(req.query.page) || 1);
+    p.set('page', String(page));
+
+    const zip = String(req.query.zip || '').trim();
+    if (/^\d{5}$/.test(zip)) {
+      p.set('zip', zip);
+      const distance = Number(req.query.distance);
+      if (Number.isFinite(distance) && distance > 0) p.set('distance', String(distance));
+    }
+    if (req.query.make) p.set('vehicle.make', String(req.query.make));
+    if (req.query.model) p.set('vehicle.model', String(req.query.model));
+
+    const SORTABLE = new Set(['createdAt', 'updatedAt', 'price', 'miles', 'year']);
+    if (req.query.sort) {
+      const [field, dir] = String(req.query.sort).split('.');
+      if (SORTABLE.has(field) && (dir === 'asc' || dir === 'desc')) p.set('sort', String(req.query.sort));
+    }
+    if (req.query.cpo === 'true') p.set('retailListing.cpo', 'true');
+    const BODY_STYLES = new Set(['Car', 'SUV', 'Truck', 'Van']);
+    if (req.query.bodyStyle && BODY_STYLES.has(String(req.query.bodyStyle))) {
+      p.set('vehicle.bodyStyle', String(req.query.bodyStyle));
+    }
+
+    const yearMin = Number(req.query.yearMin);
+    const yearMax = Number(req.query.yearMax);
+    if (Number.isFinite(yearMin) && Number.isFinite(yearMax) && yearMin > 1900) {
+      p.set('vehicle.year', `${Math.round(yearMin)}-${Math.round(yearMax)}`);
+    }
+
+    const priceMax = Number(req.query.priceMax);
+    const priceMin = Number(req.query.priceMin);
+    if (Number.isFinite(priceMax) && priceMax > 0) {
+      p.set('retailListing.price', `${Number.isFinite(priceMin) && priceMin > 0 ? Math.round(priceMin) : 0}-${Math.round(priceMax)}`);
+    }
+
+    try {
+      const r = await fetch(`${AUTODEV_URL}?${p.toString()}`, { headers: authHeaders });
+      if (!r.ok) {
+        const detail = await r.text().catch(() => '');
+        const message = r.status === 401 || r.status === 403
+          ? 'Auto.dev rejected the API key. Check AUTODEV_API_KEY, or whether the monthly free quota is used up.'
+          : `Auto.dev returned ${r.status}. ${detail.slice(0, 300)}`;
+        console.warn('[listings←]', r.status, detail.slice(0, 300));
+        return res.status(502).json({ error: 'listings_upstream_error', status: r.status, message });
+      }
+      const payload = await r.json().catch(() => null);
+      const rows = Array.isArray(payload?.data) ? payload.data
+        : Array.isArray(payload?.records) ? payload.records
+        : Array.isArray(payload) ? payload : [];
+      const listings = rows.map(normalizeDev).filter(Boolean);
+      const origin = /^\d{5}$/.test(zip) ? await geocodeZipDev(zip) : null;
+      const total = Number(payload?.total);
+      res.json({
+        listings,
+        origin,
+        page,
+        pageSize: 20,
+        total: Number.isFinite(total) ? total : null,
+        hasMore: Boolean(payload?.links?.next) || listings.length === 20,
+      });
+    } catch (err) {
+      res.status(502).json({ error: 'listings_upstream_unreachable', message: String(err?.message || err) });
     }
   });
 
