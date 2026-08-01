@@ -32,7 +32,7 @@ function readStoredWidth() {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, n));
 }
 
-export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggle }) {
+export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggle, hidden = false }) {
   const { user, userDoc } = useAuth();
   const { sessions, activeSessionId, loadSessions, loadSession, deleteSession, startNewChat, activeMode, renameSession } = useChat();
   // Inline rename state — { id, draft } when a session is being renamed,
@@ -108,7 +108,10 @@ export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggl
     };
   }, [resizing]);
 
-  const effectiveWidth = collapsed ? COLLAPSED_WIDTH : width;
+  // `hidden` collapses the sidebar to width 0 — used by Find Me a Car
+  // mode, which takes over the full canvas. The existing width transition
+  // animates the slide-out cleanly.
+  const effectiveWidth = hidden ? 0 : collapsed ? COLLAPSED_WIDTH : width;
 
   return (
     <div

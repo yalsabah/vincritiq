@@ -11,13 +11,14 @@
 
 // ─── Pricing constants ────────────────────────────────────────────────────────
 
-// Claude Sonnet 4 (claude-sonnet-4-20250514). Per million tokens.
+// Claude Opus 5 (claude-opus-5). Per million tokens.
+// Keep in sync with MODEL in src/utils/claudeApi.js.
 export const CLAUDE_PRICING = {
-  inputPerMTok: 3.00,
-  outputPerMTok: 15.00,
+  inputPerMTok: 5.00,
+  outputPerMTok: 25.00,
   // Prompt caching reads are ~10% of input cost; cache writes are 1.25× input.
-  cachedReadPerMTok: 0.30,
-  cacheWritePerMTok: 3.75,
+  cachedReadPerMTok: 0.50,
+  cacheWritePerMTok: 6.25,
 };
 
 // Per-call fixed costs for non-token APIs.

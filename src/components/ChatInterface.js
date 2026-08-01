@@ -37,6 +37,7 @@ import ContextModal from "./ContextModal";
 import ReportModal from "./ReportModal";
 import SellReportModal from "./SellReportModal";
 import ModeTabs from "./ModeTabs";
+import FindACarPanel from "./FindACarPanel";
 import ThinkingPanel from "./ThinkingPanel";
 import UploadArea from "./UploadArea";
 
@@ -691,6 +692,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 		setMessages,
 		recordFeedback,
 		activeMode,
+		setActiveMode,
 		renameSession,
 	} = useChat();
 	const [input, setInput] = useState("");
@@ -747,6 +749,15 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	useEffect(() => {
 		modelProviderPrefRef.current = userDoc?.preferences?.modelProvider || 'auto';
 	}, [userDoc?.preferences?.modelProvider]);
+
+	// Remember the mode the user was on before flipping into Find so the
+	// back button knows where to return. Updates on every mode change
+	// EXCEPT when entering find. Defaults to 'buy' so a deep-link directly
+	// into find still has somewhere sensible to fall back to.
+	const previousModeRef = useRef('buy');
+	useEffect(() => {
+		if (activeMode !== 'find') previousModeRef.current = activeMode;
+	}, [activeMode]);
 
 	// Notify the parent (App.js) whenever the report modal opens or closes
 	// so it can auto-collapse the left sidebar — giving the chat ↔ report
@@ -2276,15 +2287,32 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 				transition: isResizingReport ? 'none' : undefined,
 			}}
 		>
-			{/* Mode tabs — Buy / Sell / Find. Switches the analysis flow without
-			    reloading the page. Sits above the chat content so the active
-			    selection is always visible. */}
+			{/* Mode tabs — Buy / Sell / Find. Hidden entirely when in Find
+			    so the search surface gets the full canvas; the Find panel
+			    surfaces its own "Back" affordance for returning to chat. */}
+			{activeMode !== 'find' && (
+				<div
+					className="flex-shrink-0 flex items-center justify-center py-3 px-4"
+					style={{ borderBottom: "1px solid var(--color-border)" }}
+				>
+					<ModeTabs />
+				</div>
+			)}
+
+			{/* Sliding track: Buy/Sell share the chat panel on the left,
+			    Find lives on the right. CSS handles the slide animation
+			    based on data-mode. Track height fills the remaining space
+			    below ModeTabs. */}
 			<div
-				className="flex-shrink-0 flex items-center justify-center py-3 px-4"
-				style={{ borderBottom: "1px solid var(--color-border)" }}
+				className="flex-1 overflow-hidden"
+				style={{ position: 'relative' }}
 			>
-				<ModeTabs />
-			</div>
+				<div
+					className="mode-track"
+					data-mode={activeMode === 'find' ? 'find' : 'chat'}
+				>
+					{/* Chat panel — covers Buy and Sell modes */}
+					<div className="flex flex-col h-full">
 
 			{/* Messages */}
 			<div className="flex-1 overflow-y-auto px-4 py-6">
@@ -2553,6 +2581,59 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					verify with a licensed dealer.
 				</p>
 			</div>
+
+					</div>{/* /chat panel */}
+
+					{/* Find panel — listings search funnel */}
+					<div className="h-full">
+						<FindACarPanel
+							onBack={() => setActiveMode(previousModeRef.current || 'buy')}
+							onAnalyzeListing={(listing) => {
+								// Funnel into Buy: switch mode, drop a pre-filled
+								// "Analyze this VIN" prompt into the chat input, and
+								// kick off the analysis. CARFAX auto-fetch will run
+								// inside runAnalysis since it sees a VIN in the
+								// extra-text argument.
+								setActiveMode('buy');
+								// Live listings routinely omit price, mileage, or trim —
+								// dealers withhold price ("call for price") and private
+								// sellers skip odometer readings. Interpolating blindly threw
+								// on `null.toLocaleString()` and took the whole panel down,
+								// so each field is optional and simply omitted when absent.
+								const num = (n) => (Number.isFinite(n) ? n.toLocaleString() : null);
+								const facts = [
+									`VIN: ${listing.vin}`,
+									num(listing.price) ? `asking $${num(listing.price)}` : 'asking price not listed',
+									num(listing.mileage) ? `${num(listing.mileage)} miles` : 'mileage not listed',
+								];
+								const where = [listing.dealer?.city, listing.dealer?.state].filter(Boolean).join(', ');
+								if (listing.dealer?.name) {
+									facts.push(`at ${listing.dealer.name}${where ? ` in ${where}` : ''}`);
+								} else if (where) {
+									facts.push(`in ${where}`);
+								}
+								const name = [listing.year, listing.make, listing.model, listing.trim]
+									.filter(Boolean)
+									.join(' ');
+								const prompt = `Analyze this vehicle for me: ${name || 'this listing'}, ${facts.join(', ')}.`;
+								setInput(prompt);
+								if (textareaRef.current) {
+									// Bump the textarea height so the long prefilled
+									// prompt is visible without the user needing to scroll.
+									setTimeout(() => {
+										const el = textareaRef.current;
+										if (el) {
+											el.style.height = 'auto';
+											el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+											el.focus();
+										}
+									}, 360);
+								}
+							}}
+						/>
+					</div>
+				</div>{/* /mode-track */}
+			</div>{/* /track wrapper */}
 
 			{showContextModal && (
 				<ContextModal

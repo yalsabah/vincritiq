@@ -41,7 +41,12 @@ function AppInner() {
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
   const [isCompacting, setIsCompacting] = useState(false);
-  const { messages } = useChat();
+  const { messages, activeMode } = useChat();
+  // Find Me a Car takes over the full canvas — hide the left sidebar
+  // and the top-right Session Info dropdown so the search surface owns
+  // the screen. The slide animation runs via the sidebar's existing
+  // width transition.
+  const findModeActive = activeMode === 'find';
 
   // ChatInterface exposes a triggerCompact function via this ref so the
   // sidebar's "Compact Chat" button can invoke the same code path as typing
@@ -169,6 +174,7 @@ function AppInner() {
         onToggle={() => setSidebarCollapsed(c => !c)}
         onOpenSettings={() => setShowSettings(true)}
         onOpenAuth={() => setShowAuth(true)}
+        hidden={findModeActive}
       />
 
       <div className="flex-1 overflow-hidden">
@@ -181,12 +187,14 @@ function AppInner() {
         />
       </div>
 
-      <SessionInfoButton
-        messages={messages}
-        onPreviewImage={(url) => setPreviewImage(url)}
-        onCompact={() => compactTriggerRef.current && compactTriggerRef.current()}
-        isCompacting={isCompacting}
-      />
+      {!findModeActive && (
+        <SessionInfoButton
+          messages={messages}
+          onPreviewImage={(url) => setPreviewImage(url)}
+          onCompact={() => compactTriggerRef.current && compactTriggerRef.current()}
+          isCompacting={isCompacting}
+        />
+      )}
 
       {previewImage && (
         <div

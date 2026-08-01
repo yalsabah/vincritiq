@@ -5,12 +5,21 @@
 //   { label: 'Claude input', amount: 0.0123, detail: '4,096 tok' }
 // We sum the numeric token counts back out for a context-window indicator.
 //
-// Claude Sonnet 4 has a 200,000-token context window. Anthropic does not bill
-// for context-fill, but we use it as a "running out of room" indicator since
-// keeping a chat very long degrades quality and costs more per turn.
+// Claude Opus 5 has a 1,000,000-token context window — but the hard ceiling is
+// the wrong number to gauge against. Anthropic doesn't bill for context-fill,
+// yet a very long chat still degrades answer quality and costs more per turn,
+// and at Opus pricing a 700K-token turn is expensive enough that nobody should
+// reach it by accident. So the gauge and the Compact Chat prompt run off a
+// deliberately conservative soft budget, not the model's actual limit.
 
-export const CLAUDE_CONTEXT_WINDOW = 200_000;
-// At this fraction of the window we surface the "Reaching context limit"
+// True model capability — exported for display, not for the gauge math.
+export const CLAUDE_CONTEXT_WINDOW = 1_000_000;
+
+// The budget the UI actually measures against. Raising this makes the app
+// tolerate longer sessions before nudging the user to compact.
+export const CONTEXT_SOFT_BUDGET = 200_000;
+
+// At this fraction of the SOFT budget we surface the "Reaching context limit"
 // warning + the Compact Chat button.
 export const CONTEXT_WARN_AT = 0.7;
 
@@ -72,7 +81,7 @@ export function aggregateContextStats(messages = []) {
   }
 
   const totalTokens = inputTokens + outputTokens;
-  const contextPct = Math.min(1, maxSingleInput / CLAUDE_CONTEXT_WINDOW);
+  const contextPct = Math.min(1, maxSingleInput / CONTEXT_SOFT_BUDGET);
   const nearLimit = contextPct >= CONTEXT_WARN_AT;
 
   return {

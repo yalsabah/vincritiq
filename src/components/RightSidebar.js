@@ -9,7 +9,7 @@ import {
   Sparkles,
   ExternalLink,
 } from 'lucide-react';
-import { aggregateContextStats, CLAUDE_CONTEXT_WINDOW } from '../utils/contextStats';
+import { aggregateContextStats, CONTEXT_SOFT_BUDGET } from '../utils/contextStats';
 import { formatUsd } from '../utils/pricing';
 
 // Right-hand companion sidebar for the chat. Shows:
@@ -210,8 +210,8 @@ function ContextMeter({ stats, onCompact, isCompacting }) {
         />
       </div>
       <div className="text-[10px] flex items-center justify-between" style={{ color: 'var(--color-muted)' }}>
-        <span>Latest input: {fmtNum(stats.contextPct * CLAUDE_CONTEXT_WINDOW)} tok</span>
-        <span>Limit: {fmtNum(CLAUDE_CONTEXT_WINDOW)}</span>
+        <span>Latest input: {fmtNum(stats.contextPct * CONTEXT_SOFT_BUDGET)} tok</span>
+        <span>Soft limit: {fmtNum(CONTEXT_SOFT_BUDGET)}</span>
       </div>
 
       {stats.nearLimit && (
