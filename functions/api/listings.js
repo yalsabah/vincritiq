@@ -277,12 +277,30 @@ export async function onRequestGet({ request, env }) {
     }
   }
 
-  // Free-text is split by the client into make/model, because Auto.dev filters
-  // on structured fields rather than a single query string.
+  // Free-text is split by the client into make/model(/trim), because Auto.dev
+  // filters on structured fields rather than a single query string.
+  //
+  // `vehicle.model` and `vehicle.trim` are EXACT-match fields upstream —
+  // `vehicle.model=camr` returns 0 rows even though `vehicle.model=camry`
+  // returns 45,784. That's fatal for a live-as-you-type search box, since
+  // every keystroke before the model name is fully typed would show "no
+  // results". Auto.dev does support a trailing `*` as a prefix wildcard
+  // (`vehicle.model=camr*` matches Camry), confirmed against the live API,
+  // so a wildcard is appended to whatever the client sent unless it's
+  // already there.
+  const wildcard = (s) => (s.endsWith('*') ? s : `${s}*`);
+
   const make = (params.get('make') || '').trim();
   const model = (params.get('model') || '').trim();
+  const trim = (params.get('trim') || '').trim();
   if (make) upstreamParams.set('vehicle.make', make);
-  if (model) upstreamParams.set('vehicle.model', model);
+  if (model) upstreamParams.set('vehicle.model', wildcard(model));
+  // `trim` is a distinct upstream field from `model` — e.g. a BMW "M340i" is
+  // vehicle.model="3 Series" + vehicle.trim="M340i". The client sends this
+  // as a fallback when a model-shaped search comes back empty (see
+  // fetchListings in src/utils/listings.js), so a token like "m340i" that
+  // isn't a model name at all still resolves.
+  if (trim) upstreamParams.set('vehicle.trim', wildcard(trim));
 
   // Auto.dev expresses numeric filters as `min-max` range strings.
   const priceMin = Number(params.get('priceMin'));

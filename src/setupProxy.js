@@ -868,8 +868,13 @@ module.exports = function (app) {
       const distance = Number(req.query.distance);
       if (Number.isFinite(distance) && distance > 0) p.set('distance', String(distance));
     }
+    // Mirrors functions/api/listings.js: vehicle.model/trim are exact-match
+    // upstream, so a trailing `*` wildcard is what makes partial typing
+    // ("camr") match the full model name ("Camry").
+    const wildcard = (s) => (s.endsWith('*') ? s : `${s}*`);
     if (req.query.make) p.set('vehicle.make', String(req.query.make));
-    if (req.query.model) p.set('vehicle.model', String(req.query.model));
+    if (req.query.model) p.set('vehicle.model', wildcard(String(req.query.model)));
+    if (req.query.trim) p.set('vehicle.trim', wildcard(String(req.query.trim)));
 
     const SORTABLE = new Set(['createdAt', 'updatedAt', 'price', 'miles', 'year']);
     if (req.query.sort) {

@@ -112,13 +112,51 @@ const canonicalMake = (s) => {
 // "s5 sportback" as the model returns nothing. Trailing tokens are refined
 // locally instead — "audi s5 sportback" queries Audi S5 upstream and narrows
 // to Sportback here. A 17-character token is routed as a VIN.
+// A model year written into the query, e.g. "2020 toyota camry" or
+// "toyota camry 2020". Also accepts a range: "2018-2022 bmw".
+//
+// This has to be stripped BEFORE make/model parsing. "2020" isn't a known
+// make, so the old parser fell through and used it as the model — turning
+// "2020 toyota camry" into vehicle.model=2020*, which matches nothing.
+const YEAR_RE = /^(19\d{2}|20\d{2})$/;
+const YEAR_RANGE_RE = /^(19\d{2}|20\d{2})\s*[-–]\s*(19\d{2}|20\d{2})$/;
+
+const plausibleYear = (n) => Number.isFinite(n) && n >= EARLIEST_YEAR && n <= LATEST_YEAR;
+
 export function parseQuery(raw) {
   const q = String(raw || '').trim();
-  const empty = { make: '', model: '', trimTokens: [], vin: '' };
+  const empty = { make: '', model: '', trimTokens: [], vin: '', yearMin: null, yearMax: null };
   if (!q) return empty;
   if (VIN_RE.test(q)) return { ...empty, vin: q.toUpperCase() };
 
-  const parts = q.split(/\s+/);
+  let parts = q.split(/\s+/);
+
+  // Pull out a year or year range from anywhere in the query, and drop those
+  // tokens so they can't be mistaken for a make or model.
+  let yearMin = null;
+  let yearMax = null;
+  parts = parts.filter((tok) => {
+    const range = tok.match(YEAR_RANGE_RE);
+    if (range) {
+      const a = Number(range[1]);
+      const b = Number(range[2]);
+      if (plausibleYear(a) && plausibleYear(b)) {
+        yearMin = Math.min(a, b);
+        yearMax = Math.max(a, b);
+        return false;
+      }
+    }
+    if (YEAR_RE.test(tok)) {
+      const n = Number(tok);
+      if (plausibleYear(n)) {
+        // Repeated years widen into a range: "2018 2020 camry" → 2018-2020.
+        yearMin = yearMin == null ? n : Math.min(yearMin, n);
+        yearMax = yearMax == null ? n : Math.max(yearMax, n);
+        return false;
+      }
+    }
+    return true;
+  });
 
   // Longest-match-first so two-word makes beat their first token.
   const twoWord = parts.length >= 2 ? canonicalMake(`${parts[0]} ${parts[1]}`) : null;
@@ -139,6 +177,8 @@ export function parseQuery(raw) {
     model: rest[0] || '',
     trimTokens: rest.slice(1).map((t) => t.toLowerCase()),
     vin: '',
+    yearMin,
+    yearMax,
   };
 }
 
@@ -155,23 +195,22 @@ export function parseQuery(raw) {
  * @returns {Promise<{ listings: Array, origin: object|null, page: number, total: number|null, hasMore: boolean }>}
  */
 export async function fetchListings(filters = {}) {
-  const { make, model, vin } = parseQuery(filters.q);
+  const { make, model, trimTokens, vin, yearMin: qYearMin, yearMax: qYearMax } = parseQuery(filters.q);
 
-  const params = new URLSearchParams();
+  const base = new URLSearchParams();
   if (vin) {
     // A VIN search is exact — every other filter is noise, so send it alone
     // and let the server hit Auto.dev's single-listing endpoint.
-    params.set('vin', vin);
-    return requestListings(params, filters.signal);
+    base.set('vin', vin);
+    return requestListings(base, filters.signal);
   }
-  if (make) params.set('make', make);
-  if (model) params.set('model', model);
+  if (make) base.set('make', make);
 
   const zip = String(filters.zip || '').trim();
   if (/^\d{5}$/.test(zip)) {
-    params.set('zip', zip);
+    base.set('zip', zip);
     if (filters.radius && filters.radius !== 'nationwide') {
-      params.set('distance', String(filters.radius));
+      base.set('distance', String(filters.radius));
     }
   }
 
@@ -180,26 +219,62 @@ export async function fetchListings(filters = {}) {
   // ceiling" rather than a literal cap — sending it would exclude anything
   // above it, so an at-max slider is treated as unset.
   if (Number.isFinite(priceMax) && priceMax > 0 && priceMax < PRICE_CEILING) {
-    params.set('priceMin', String(priceMin || 0));
-    params.set('priceMax', String(priceMax));
+    base.set('priceMin', String(priceMin || 0));
+    base.set('priceMax', String(priceMax));
   }
 
   // Year is a genuine upstream range filter (`vehicle.year=2018-2024`), so it
-  // narrows the query rather than the page. Only sent when it's actually
-  // narrower than the full span — otherwise it's noise on every request.
-  const [yearMin, yearMax] = filters.yearRange || [];
+  // narrows the query rather than the page.
+  //
+  // A year typed into the search box wins over the sidebar dropdowns: someone
+  // who types "2020 camry" while the sidebar still says 1990-2027 means the
+  // 2020, and intersecting the two would just be a confusing no-op here.
+  const [sliderMin, sliderMax] = filters.yearRange || [];
+  const yearMin = qYearMin ?? sliderMin;
+  const yearMax = qYearMax ?? sliderMax;
+  // Only sent when actually narrower than the full span — otherwise it's noise
+  // on every request.
   if (Number.isFinite(yearMin) && Number.isFinite(yearMax) && (yearMin > EARLIEST_YEAR || yearMax < LATEST_YEAR)) {
-    params.set('yearMin', String(yearMin));
-    params.set('yearMax', String(yearMax));
+    base.set('yearMin', String(yearMin));
+    base.set('yearMax', String(yearMax));
   }
 
-  if (filters.sort) params.set('sort', filters.sort);
-  if (filters.cpoOnly) params.set('cpo', 'true');
-  if (filters.bodyStyle) params.set('bodyStyle', filters.bodyStyle);
+  if (filters.sort) base.set('sort', filters.sort);
+  if (filters.cpoOnly) base.set('cpo', 'true');
+  if (filters.bodyStyle) base.set('bodyStyle', filters.bodyStyle);
 
-  params.set('page', String(filters.page || 1));
+  base.set('page', String(filters.page || 1));
 
-  return requestListings(params, filters.signal);
+  if (!model) {
+    return requestListings(base, filters.signal);
+  }
+
+  // Primary attempt: the typed token(s) as a model. The server prefix-matches
+  // this upstream (see functions/api/listings.js), so "camr" already matches
+  // "Camry" without the user finishing the word.
+  const modelAttempt = new URLSearchParams(base);
+  modelAttempt.set('model', model);
+  const result = await requestListings(modelAttempt, filters.signal);
+  if (result.listings.length > 0) return result;
+
+  // Fallback: the token may not be a model at all. A BMW "M340i" is
+  // vehicle.model="3 Series" + vehicle.trim="M340i" upstream — nothing in the
+  // model field starts with "m340i", so the primary attempt above comes back
+  // empty even though the car exists. Retry the same remainder as a trim
+  // filter instead. This only runs on a genuine zero-result search, so the
+  // common case (an actual model name) still costs one call, not two.
+  const trimCandidate = [model, ...trimTokens].join(' ').trim();
+  const trimAttempt = new URLSearchParams(base);
+  trimAttempt.set('trim', trimCandidate);
+  try {
+    const trimResult = await requestListings(trimAttempt, filters.signal);
+    if (trimResult.listings.length > 0) return trimResult;
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err;
+    // The primary attempt already succeeded (if emptily) — a failure on this
+    // speculative retry shouldn't override a valid empty result with an error.
+  }
+  return result;
 }
 
 async function requestListings(params, signal) {
