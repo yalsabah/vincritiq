@@ -92,13 +92,15 @@ module.exports = function (app) {
     })
   );
 
-  // Tripo3D — catch-all; server adds Authorization: Bearer
+  // Tripo3D (API v3) — catch-all; server adds Authorization: Bearer.
+  // Mirrors functions/api/tripo/[[path]].js. v2 is retired 2026-11-01; v3
+  // moves the host to openapi.tripo3d.ai and the prefix to /v3.
   app.use(
     '/api/tripo',
     createProxyMiddleware({
-      target: 'https://api.tripo3d.ai',
+      target: 'https://openapi.tripo3d.ai',
       changeOrigin: true,
-      pathRewrite: { '^/api/tripo': '/v2/openapi' },
+      pathRewrite: { '^/api/tripo': '/v3' },
       onProxyReq: (proxyReq, req) => {
         stripBrowserHeaders(proxyReq);
         if (TRIPO_KEY) {
@@ -818,6 +820,8 @@ module.exports = function (app) {
       condition: retail.used === false ? 'new' : 'used',
       cpo: Boolean(retail.cpo),
       photos: retail.primaryImage ? [retail.primaryImage] : [],
+      primaryImage: retail.primaryImage || null,
+      photoCount: toNum(retail.photoCount) || 0,
       dealer: { name: dealerName || 'Dealer', source, city: null, state: null, lat, lng },
       listingUrl: safeUrl(retail.vdp),
       carfaxUrl: retail.carfaxUrl || null,
@@ -926,6 +930,32 @@ module.exports = function (app) {
       });
     } catch (err) {
       res.status(502).json({ error: 'listings_upstream_unreachable', message: String(err?.message || err) });
+    }
+  });
+
+  // Listing photos (dev) — mirrors functions/api/listing-photo.js.
+  // The photo host only allows CORS from ui.auto.dev, so the browser can
+  // render these in an <img> but can't fetch the bytes. Analyze needs bytes.
+  const PHOTO_HOSTS = new Set(['retail.photos.vin', 'photos.vin']);
+  app.get('/api/listing-photo', async (req, res) => {
+    const raw = String(req.query.url || '');
+    let target;
+    try { target = new URL(raw); } catch { return res.status(400).json({ error: 'malformed url' }); }
+    if (target.protocol !== 'https:') return res.status(400).json({ error: 'https only' });
+    if (!PHOTO_HOSTS.has(target.hostname)) {
+      return res.status(403).json({ error: `host not allowed: ${target.hostname}` });
+    }
+    try {
+      const r = await fetch(target.toString(), { headers: { Accept: 'image/*' } });
+      if (!r.ok) return res.status(r.status === 404 ? 404 : 502).json({ error: `upstream ${r.status}` });
+      const type = r.headers.get('content-type') || '';
+      if (!type.startsWith('image/')) return res.status(415).json({ error: `not an image: ${type}` });
+      res.setHeader('Content-Type', type);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      if (r.body) Readable.fromWeb(r.body).pipe(res); else res.end();
+    } catch (err) {
+      res.status(502).json({ error: String(err?.message || err) });
     }
   });
 

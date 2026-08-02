@@ -32,7 +32,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
   Search, Heart, Sparkles, ExternalLink, ArrowLeft, MapPin,
-  Loader2, AlertCircle, RefreshCw, SlidersHorizontal, X,
+  Loader2, AlertCircle, RefreshCw, SlidersHorizontal, X, FileText,
 } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import {
@@ -66,6 +66,13 @@ const MAP_DEFAULT_FRAC = 0.4;
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
 const FAVORITES_KEY = 'vincritiq.find.favorites';
+
+// "Load more" aims to add at least this many refined listings per click, and
+// will fetch up to this many upstream pages to reach it before giving up.
+// One page is 20 rows, so the cap tops out at ~80 rows / 4 API calls per click
+// — the loop stops as soon as the target is met (usually the first page).
+const LOAD_MORE_MIN = 20;
+const LOAD_MORE_MAX_PAGES = 4;
 
 // Basemap palettes. The tile URL, the container background (visible while
 // tiles stream in, and in the gutters past the map edges), and the pin outline
@@ -360,6 +367,24 @@ function ListingCard({ listing, hovered, favorited, onHover, onLeave, onAnalyze,
             <Sparkles size={11} />
             Analyze
           </button>
+          {/* CARFAX lives behind a carfax.com page, not a file we can read — so
+              it's offered as a link for the user to open rather than attached
+              to the analysis. See the comment in ChatInterface's Analyze
+              handler for why attaching it would be actively misleading. */}
+          {listing.carfaxUrl && (
+            <a
+              href={listing.carfaxUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center justify-center w-7 h-7 rounded-md transition-all hover:opacity-80"
+              style={{ border: '1px solid var(--color-border)', color: 'var(--color-muted)' }}
+              title="View CARFAX report"
+              aria-label="View CARFAX report"
+            >
+              <FileText size={11} />
+            </a>
+          )}
           {listing.listingUrl && (
             <a
               href={listing.listingUrl}
@@ -527,7 +552,7 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
     [q, zip, zipValid, radius, priceRange, yearRange, sort, cpoOnly, bodyStyle],
   );
 
-  const runSearch = useCallback(async (filters, nextPage, { append } = {}) => {
+  const runSearch = useCallback(async (filters, nextPage, { append, refineArgs } = {}) => {
     // Abort whatever is in flight — with a debounced search box the previous
     // request is always stale, and letting it resolve would clobber the newer
     // results out of order.
@@ -539,15 +564,56 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
     setError(null);
 
     try {
-      const result = await fetchListings({ ...filters, page: nextPage, signal: controller.signal });
-      setRawListings((prev) => (append ? [...prev, ...result.listings] : result.listings));
-      setOrigin(result.origin);
-      setTotal(result.total);
-      // Upstream keeps advertising a `next` link past its pagination depth
-      // limit, where it then serves empty pages. An empty result is the real
-      // end of the road regardless of what the envelope claims.
-      setHasMore(result.hasMore && result.listings.length > 0);
-      setPage(result.page);
+      // ── Fresh search: one page, replace ──
+      if (!append) {
+        const result = await fetchListings({ ...filters, page: nextPage, signal: controller.signal });
+        setRawListings(result.listings);
+        setOrigin(result.origin);
+        setTotal(result.total);
+        // Upstream keeps advertising a `next` link past its pagination depth
+        // limit, where it then serves empty pages. An empty result is the real
+        // end of the road regardless of what the envelope claims.
+        setHasMore(result.hasMore && result.listings.length > 0);
+        setPage(result.page);
+        return;
+      }
+
+      // ── Load more: accrue ~LOAD_MORE_MIN *refined* net-new listings ──
+      //
+      // A single upstream page is 20 raw rows, but the client-side refine pass
+      // (source / mileage / trim / radius) can trim that to a handful when a
+      // filter is active — so one fetch per click sometimes added only a few
+      // cards. Instead we pull pages until the refined count of this batch
+      // reaches the target, we run out, or we hit the per-click page cap. The
+      // cap keeps a single click from burning a chunk of the 1,000/mo quota;
+      // in the common unfiltered case the first page already clears the target
+      // and the loop stops after one call.
+      let collected = [];
+      let curPage = nextPage;
+      let more = false;
+      let lastTotal = null;
+      for (let i = 0; i < LOAD_MORE_MAX_PAGES; i++) {
+        const result = await fetchListings({ ...filters, page: curPage, signal: controller.signal });
+        collected = collected.concat(result.listings);
+        more = result.hasMore && result.listings.length > 0;
+        lastTotal = result.total;
+        curPage = result.page + 1;
+        const refinedCount = refineArgs
+          ? refineListings(collected, refineArgs).length
+          : collected.length;
+        if (!more || refinedCount >= LOAD_MORE_MIN) break;
+      }
+
+      // Dedupe against what's already on screen so an overlapping page can't
+      // produce duplicate React keys (VINs are the grid key).
+      setRawListings((prev) => {
+        const seen = new Set(prev.map((l) => l.vin));
+        const fresh = collected.filter((l) => l.vin && !seen.has(l.vin));
+        return [...prev, ...fresh];
+      });
+      if (lastTotal != null) setTotal(lastTotal);
+      setHasMore(more);
+      setPage(curPage - 1);
     } catch (err) {
       if (err?.name === 'AbortError') return; // superseded; the newer search owns the UI
       setError({ message: err?.message || 'Something went wrong.', code: err?.code });
@@ -1191,7 +1257,15 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
                 {hasMore && (
                   <div className="flex justify-center mt-4">
                     <button
-                      onClick={() => runSearch(serverFilters, page + 1, { append: true })}
+                      onClick={() =>
+                        runSearch(serverFilters, page + 1, {
+                          append: true,
+                          // The refine args the loop uses to count how many of
+                          // each fetched page actually survive to the grid, so
+                          // it knows when it has gathered enough net-new.
+                          refineArgs: { q, mileageRange, sources: activeSources, radius, origin },
+                        })
+                      }
                       disabled={loadingMore}
                       className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all hover:opacity-80"
                       style={{

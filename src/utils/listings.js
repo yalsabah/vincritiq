@@ -19,6 +19,12 @@
 export const PRICE_CEILING = 250000;
 export const MILEAGE_CEILING = 200000;
 
+// Radius used for "Nationwide" when a ZIP is present — wide enough to cover
+// the continental US plus Alaska and Hawaii from any origin. Reaches ~4.40M of
+// the ~4.49M total listings; the ~2% shortfall is rows the feed has no location
+// for, which a ZIP-scoped query can't return either way.
+const NATIONWIDE_DISTANCE_MI = 3000;
+
 // Year bounds, shared with the panel so both agree on what "unfiltered" means.
 export const EARLIEST_YEAR = 1990;
 export const LATEST_YEAR = new Date().getFullYear() + 1;
@@ -52,6 +58,39 @@ export function distanceMiles(lat1, lng1, lat2, lng2) {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+/**
+ * Download a listing photo and hand back a real `File`.
+ *
+ * The Analyze pipeline treats vehicle images as uploaded files — it runs them
+ * through compressImageFiles() and FileReader, both of which need a Blob. A
+ * plain `{ name, url }` object silently produces nothing, so anything feeding
+ * the funnel has to materialise the bytes first.
+ *
+ * Goes through /api/listing-photo rather than fetching directly: the photo
+ * host sets `access-control-allow-origin: https://ui.auto.dev`, which lets an
+ * <img> render it but blocks a same-origin fetch.
+ *
+ * Returns null rather than throwing when the photo doesn't exist — the feed
+ * builds these URLs from the VIN and a meaningful share of them 404, which is
+ * an absent photo, not a failure worth interrupting the user for.
+ */
+export async function fetchListingPhotoAsFile(url, filename = 'listing-photo.jpg') {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const res = await fetch(`/api/listing-photo?url=${encodeURIComponent(url)}`);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    if (!blob.size || !blob.type.startsWith('image/')) return null;
+    // Give it the extension the content-type actually implies, so downstream
+    // compression and the Claude media_type agree.
+    const ext = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg';
+    const name = filename.replace(/\.[^.]+$/, '') + '.' + ext;
+    return new File([blob], name, { type: blob.type });
+  } catch {
+    return null;
+  }
 }
 
 // Error surfaced to the panel. `code` lets the UI distinguish "you haven't
@@ -209,9 +248,17 @@ export async function fetchListings(filters = {}) {
   const zip = String(filters.zip || '').trim();
   if (/^\d{5}$/.test(zip)) {
     base.set('zip', zip);
-    if (filters.radius && filters.radius !== 'nationwide') {
-      base.set('distance', String(filters.radius));
-    }
+    // `distance` MUST be sent explicitly whenever a ZIP is present. Omitting it
+    // does not mean "no radius" — Auto.dev defaults to 50 miles, so picking
+    // "Nationwide" with a ZIP entered silently stayed a 50-mile search
+    // (verified: zip alone and zip+distance=50 both return 77,250 rows).
+    //
+    // For Nationwide we send a continent-spanning radius rather than dropping
+    // the ZIP, because the ZIP is also what makes the feed return coordinates
+    // at all — without it every listing comes back at [0,0] and the map empties.
+    base.set('distance', filters.radius && filters.radius !== 'nationwide'
+      ? String(filters.radius)
+      : String(NATIONWIDE_DISTANCE_MI));
   }
 
   const [priceMin, priceMax] = filters.priceRange || [];

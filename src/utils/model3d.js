@@ -109,24 +109,69 @@ export function buildModelSlug(vehicle) {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && slug.length <= 120 ? slug : null;
 }
 
-// ─── Tripo3D primitives (unchanged from before) ───────────────────────────────
+// ─── Tripo3D primitives (API v3) ──────────────────────────────────────────────
+//
+// Migrated from v2 → v3 in Aug 2026 (v2 is retired 2026-11-01). All three
+// endpoint paths changed; the API key did not. Docs:
+// https://developers.tripo3d.ai/en/docs/migration-v2-to-v3
+//
+//   v2                              →  v3 (via the /api/tripo proxy)
+//   POST /upload                    →  POST /files
+//   POST /task {type,...}           →  POST /generation/image-to-model {...}
+//   GET  /task/{id}                 →  GET  /tasks/{id}
+//
+// The request/response shapes below were verified against the live v3 API at
+// migration time (Aug 2026): /files returns data.file_token; image-to-model
+// with { model, file: { type, file_token } } is accepted and returns a
+// task_id; /tasks/{id} returns the { status, progress, output } envelope.
+// The ONE thing that couldn't be observed is the populated `output` of a
+// SUCCESSFUL task (the test job — a throwaway pixel with no credit — failed),
+// so the GLB-URL field name in tripoPoll stays defensively multi-named.
+
+// Generation model. v3 REQUIRES this field — omitting it 400s with
+// "model is required, allowed values: P1-20260311, v2.5-20250123,
+// v3.0-20250812, v3.1-20260211". v3.1 is the current v3-line model and is
+// verified to accept our request; swap for 'P1-20260311' (newer flagship) if
+// output quality needs a bump.
+const TRIPO_MODEL = 'v3.1-20260211';
+
+// Build the image-to-model request body. Verified accepted by the live v3 API:
+// the v2 `file: { type, file_token }` object is unchanged; only the v2
+// task-level `type: 'image_to_model'` discriminator is dropped (the endpoint
+// path now implies it), and the required `model` is added.
+function buildImageToModelBody(fileToken) {
+  return { model: TRIPO_MODEL, file: { type: 'jpg', file_token: fileToken } };
+}
 
 async function tripoSubmitFromFile(imageBase64, imageMediaType) {
   const blob = await (await fetch(`data:${imageMediaType};base64,${imageBase64}`)).blob();
   const form = new FormData();
   form.append('file', blob, 'vehicle.jpg');
 
-  const uploadRes = await fetch('/api/tripo/upload', { method: 'POST', body: form });
+  // v3: POST /files (multipart, `file` field) — was /upload.
+  const uploadRes = await fetch('/api/tripo/files', { method: 'POST', body: form });
   if (!uploadRes.ok) throw new Error(`Tripo upload failed: ${uploadRes.status}`);
-  const { data: { image_token } } = await uploadRes.json();
-  return tripoCreateTask({ type: 'image_to_model', file: { type: 'jpg', file_token: image_token } });
+  const uploaded = await uploadRes.json();
+  // Token field name differs across versions/docs — accept either. v3 doc:
+  // `file_token`; v2 returned `image_token`.
+  const fileToken =
+       uploaded?.data?.file_token
+    || uploaded?.data?.image_token
+    || uploaded?.data?.token;
+  if (!fileToken) {
+    throw new Error(
+      `Tripo upload returned no file token (data keys: ${Object.keys(uploaded?.data || {}).join(', ') || 'none'})`,
+    );
+  }
+  return tripoCreateTask(buildImageToModelBody(fileToken));
 }
 
-async function tripoCreateTask(input) {
-  const res = await fetch('/api/tripo/task', {
+async function tripoCreateTask(body) {
+  // v3: POST /generation/image-to-model — was POST /task with a `type` field.
+  const res = await fetch('/api/tripo/generation/image-to-model', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Tripo task failed: ${res.status}`);
   const { data: { task_id } } = await res.json();
@@ -134,16 +179,19 @@ async function tripoCreateTask(input) {
 }
 
 async function tripoPoll(taskId) {
-  const res = await fetch(`/api/tripo/task/${taskId}`);
+  // v3: GET /tasks/{id} — was GET /task/{id}. Envelope ({ code, data }),
+  // `status`/`progress`, and the `success` status value are unchanged.
+  const res = await fetch(`/api/tripo/tasks/${taskId}`);
   if (!res.ok) throw new Error(`Tripo poll failed: ${res.status}`);
   const { data } = await res.json();
   const out = data?.output ?? {};
-  // Tripo3D image-to-model has shipped several output field names across
-  // API versions. v2.5 returns the textured GLB on `pbr_model`; older
-  // versions used `model`. Try them in priority order and accept any
-  // non-empty URL so a successful job is never reported as 'no_url'.
+  // The GLB URL field name has drifted across versions. v3 docs show
+  // `model_url`; v2.5 used `pbr_model`; older used `model`. Accept any
+  // non-empty URL in priority order so a successful job is never dropped as
+  // 'no_url' just because the field was renamed.
   const glbUrl =
-       out.pbr_model       // v2.5 textured GLB (preferred)
+       out.model_url       // v3 (preferred)
+    || out.pbr_model       // v2.5 textured GLB
     || out.model           // legacy textured GLB
     || out.base_model      // untextured base mesh fallback
     || out.glb             // some endpoints

@@ -14,12 +14,29 @@ import AuthModal from './components/AuthModal';
 import SettingsModal from './components/SettingsModal';
 import UpgradeModal from './components/UpgradeModal';
 import ErrorBoundary from './components/ErrorBoundary';
+import ErrorReportPrompt from './components/ErrorReportPrompt';
+import { installGlobalErrorHandlers, setErrorPromptHandler } from './utils/errorReporter';
 
 function AppInner() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Drawer state for the phone layout. Desktop ignores this entirely — the
   // sidebar is a normal flex column there.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // The drawer's open/closed transform is applied inline (below), and inline
+  // styles can't be scoped to a breakpoint — so the breakpoint is tracked in
+  // JS. Matches Tailwind's `md`.
+  const [isPhone, setIsPhone] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = (e) => setIsPhone(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  // Set only when the sensor decides an error is genuinely unexpected — see
+  // utils/errorReporter.js for what gets filtered out before this point.
+  const [errorReport, setErrorReport] = useState(null);
   // Remember the sidebar state from before the report modal opened so we
   // can restore it on close. Auto-collapsing during side-by-side report
   // viewing maximizes the chat ↔ report split; restoring on close avoids
@@ -123,6 +140,18 @@ function AppInner() {
     }).catch(() => {});
   }, [dark, user?.uid, userDoc?.preferences?.theme]);
 
+  // Global error sensor. Installed once, before anything else runs, so a
+  // failure during startup is still caught. The handler only ever receives
+  // errors that passed the benign / duplicate / rate-limit filters.
+  useEffect(() => {
+    const uninstall = installGlobalErrorHandlers();
+    setErrorPromptHandler((report) => setErrorReport(report));
+    return () => {
+      setErrorPromptHandler(null);
+      uninstall();
+    };
+  }, []);
+
   // On boot, recover any Tripo 3D jobs that were in-flight when the user
   // refreshed/closed the tab. This polls each saved task_id and persists
   // the result so we never waste a paid-for Tripo generation.
@@ -180,6 +209,9 @@ function AppInner() {
 
   return (
     <div className="flex app-shell overflow-hidden" style={{ background: 'var(--color-bg)' }}>
+      {errorReport && (
+        <ErrorReportPrompt report={errorReport} onDismiss={() => setErrorReport(null)} />
+      )}
       {/* On phones the sidebar becomes an overlay drawer instead of a column:
           at 320-430px wide there simply isn't room for a persistent sidebar
           plus a usable chat pane. It's rendered fixed + translated off-canvas,
@@ -194,16 +226,38 @@ function AppInner() {
           // children spilled over the listings. Clipping the wrapper keeps
           // that contained regardless of what the sidebar does internally.
           'max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:w-[280px] max-md:overflow-hidden',
-          'max-md:transition-transform max-md:duration-200',
           // Find mode owns the whole canvas on a phone; there's no drawer to
           // open into, so take it out of the tree entirely.
           findModeActive ? 'max-md:hidden' : '',
-          mobileNavOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
         ].join(' ')}
+        // Inline rather than Tailwind translate utilities. Toggling between
+        // `translate-x-0` and `-translate-x-full` leaves two equal-specificity
+        // rules whose winner depends on Tailwind's emit order — in practice the
+        // class flipped correctly while the computed transform stayed parked at
+        // -100%, so the drawer never visually moved. Inline wins outright.
+        style={
+          isPhone
+            ? {
+                transform: mobileNavOpen ? 'translateX(0)' : 'translateX(-100%)',
+                transition: 'transform 200ms ease',
+              }
+            : undefined
+        }
       >
         <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(c => !c)}
+          // Inside the phone drawer the sidebar is always shown expanded —
+          // an icon rail inside an overlay is a stub of a stub, and the
+          // desktop collapsed preference shouldn't leak into it.
+          collapsed={mobileNavOpen ? false : sidebarCollapsed}
+          // On a phone the close button should dismiss the drawer outright,
+          // the same as tapping the backdrop. Collapsing to a rail there just
+          // leaves a sliver of sidebar covering the content. `mobileNavOpen`
+          // is the reliable signal: it can only be true below md, since the
+          // hamburger that sets it is md:hidden.
+          onToggle={() => {
+            if (mobileNavOpen) setMobileNavOpen(false);
+            else setSidebarCollapsed((c) => !c);
+          }}
           onOpenSettings={() => setShowSettings(true)}
           onOpenAuth={() => setShowAuth(true)}
           hidden={findModeActive}

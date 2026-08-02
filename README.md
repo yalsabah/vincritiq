@@ -108,6 +108,29 @@ In the [Firebase Console](https://console.firebase.google.com/):
        match /users/{uid}/{document=**} {
          allow read, write: if request.auth != null && request.auth.uid == uid;
        }
+
+       // Crash reports — see "Error reporting" below. Create-only from the
+       // client; reports are read in the Firebase console, never by the app,
+       // so one reporter can't read anyone else's report back out.
+       //
+       // Anonymous creates are allowed deliberately: crashes hit signed-out
+       // users too, and those are often the most useful ones. The field
+       // allowlist and size caps are what keep this from being an open write
+       // endpoint — enable App Check if it ever gets abused.
+       match /errorReports/{id} {
+         allow read, update, delete: if false;
+         allow create: if request.resource.data.keys().hasOnly([
+                            'message','name','stack','componentStack','source',
+                            'fingerprint','mode','sessionId','url','userAgent',
+                            'viewport','theme','appVersion','occurredAt',
+                            'comment','userId','email','status','createdAt'
+                          ])
+                          && request.resource.data.message is string
+                          && request.resource.data.message.size() <= 1000
+                          && request.resource.data.stack.size() <= 6000
+                          && request.resource.data.comment.size() <= 1000
+                          && request.resource.data.status == 'new';
+       }
      }
    }
    ```
@@ -131,6 +154,43 @@ This project deploys to Cloudflare Pages with a connected R2 bucket. Push to you
 2. Settings → Environment variables → add the **server-side secrets** as encrypted Secrets (`CLAUDE_API_KEY`, `AUTODEV_API_KEY`, `TRIPO_KEY`, etc.). The Firebase `REACT_APP_*` values are already in [`wrangler.toml`](./wrangler.toml).
 3. R2 → create a bucket named `vincritiq-models`. The binding is declared in `wrangler.toml`.
 4. Settings → Custom domains → point your domain at the Pages project.
+
+---
+
+## Error reporting
+
+The app watches for errors it doesn't already handle and offers the user a
+one-click "send this to the developer" prompt — the macOS crash-reporter model.
+Reports land in Firestore `errorReports/{auto-id}`; read them in the Firebase
+console, newest first, and set `status` to something other than `new` as you
+triage.
+
+**Nothing is ever sent without an explicit click.** The payload is assembled
+locally, shown in full behind "Show what will be sent", and discarded on
+"Don't Send".
+
+The part that matters is what *doesn't* prompt. [`src/utils/errorReporter.js`](./src/utils/errorReporter.js)
+holds a `KNOWN_BENIGN` list of failures the app already surfaces properly —
+aborted searches, offline blips, Claude refusals, listings-API errors,
+`ResizeObserver` noise, post-deploy chunk misses. Those are logged and dropped.
+Prompting on expected errors is how users learn to dismiss the dialog without
+reading it, which costs you the one report that mattered.
+
+On top of that:
+
+- Reports are **fingerprinted** with VINs, ids, hashes, and numbers scrubbed, so
+  the same bug on two different vehicles is one fingerprint, not two.
+- A given fingerprint re-prompts at most **once per 24h** (`localStorage`).
+- At most **2 prompts per page load**, whatever the fingerprint.
+- Users can tick **"Don't ask again on this device"**.
+
+**When you add a new expected failure mode, add it to `KNOWN_BENIGN`** — or
+call `markHandled(err, 'where')` at the call site. Otherwise it starts nagging
+everyone.
+
+Three capture points feed the sensor: `window.onerror`, `unhandledrejection`,
+and the top-level `ErrorBoundary` (which offers its own Send Report button,
+since a render crash takes the normal prompt down with the rest of the tree).
 
 ---
 
