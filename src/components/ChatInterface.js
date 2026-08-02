@@ -1,43 +1,48 @@
 import {
-  Award,
-  Car,
-  Check,
-  Copy,
-  ExternalLink,
-  Pencil,
-  RotateCcw,
-  Send,
-  ThumbsDown,
-  ThumbsUp,
+	Award,
+	Car,
+	Check,
+	Copy,
+	ExternalLink,
+	Pencil,
+	RotateCcw,
+	Send,
+	ThumbsDown,
+	ThumbsUp,
 } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useChat } from "../contexts/ChatContext";
 import { parseReport, streamCarAnalysis } from "../utils/claudeApi";
-import { generateOrFetch3D, lookupCachedModel, buildModelSlug } from "../utils/model3d";
-import { uploadVehicleImages } from "../utils/imageStorage";
 import { compressImageFiles } from "../utils/imageCompress";
-import { createCostAccumulator, FIXED_COSTS } from "../utils/pricing";
-import { decodeVin } from "../utils/vinDecode";
+import { uploadVehicleImages } from "../utils/imageStorage";
 import {
-  extractTextFromPDF,
-  fileToBase64,
-  getDominantColor,
-  getMediaType,
+	buildModelSlug,
+	generateOrFetch3D,
+	lookupCachedModel,
+} from "../utils/model3d";
+import {
+	extractTextFromPDF,
+	fileToBase64,
+	getDominantColor,
+	getMediaType,
 } from "../utils/pdfParser";
+import { createCostAccumulator, FIXED_COSTS } from "../utils/pricing";
 import {
-  canAnonPrompt,
-  canPromptFromDoc,
-  canUserPrompt,
-  incrementAnonUsage,
-  incrementUserUsage,
-  isAdmin,
+	canAnonPrompt,
+	canPromptFromDoc,
+	canUserPrompt,
+	incrementAnonUsage,
+	incrementUserUsage,
+	isAdmin,
 } from "../utils/usage";
+import { decodeVin } from "../utils/vinDecode";
 import ContextModal from "./ContextModal";
+import FindACarPanel from "./FindACarPanel";
+import { fetchListingPhotoAsFile } from "../utils/listings";
+import ModeTabs from "./ModeTabs";
 import ReportModal from "./ReportModal";
 import SellReportModal from "./SellReportModal";
-import ModeTabs from "./ModeTabs";
-import FindACarPanel from "./FindACarPanel";
 import ThinkingPanel from "./ThinkingPanel";
 import UploadArea from "./UploadArea";
 
@@ -185,14 +190,14 @@ const USER_MSG_COLLAPSE_THRESHOLD = 400;
 // them; trying to detect those is fragile, so we just trust the input.
 // Trim is omitted to keep the sidebar entry short.
 function buildSessionTitleFromReport(report) {
-  const v = report?.vehicle;
-  if (!v) return null;
-  const parts = [];
-  if (v.year) parts.push(String(v.year));
-  if (v.make) parts.push(String(v.make).trim());
-  if (v.model) parts.push(String(v.model).trim());
-  const title = parts.join(' ').trim();
-  return title.length >= 4 ? title : null; // need at least year + something
+	const v = report?.vehicle;
+	if (!v) return null;
+	const parts = [];
+	if (v.year) parts.push(String(v.year));
+	if (v.make) parts.push(String(v.make).trim());
+	if (v.model) parts.push(String(v.model).trim());
+	const title = parts.join(" ").trim();
+	return title.length >= 4 ? title : null; // need at least year + something
 }
 
 // True when regenerating the assistant response would replay all the same
@@ -281,7 +286,9 @@ function MessageBubble({
 				</div>
 			)}
 
-			<div className={`max-w-2xl ${isUser ? "ml-4 sm:ml-12" : "mr-4 sm:mr-12"} flex flex-col`}>
+			<div
+				className={`max-w-2xl ${isUser ? "ml-4 sm:ml-12" : "mr-4 sm:mr-12"} flex flex-col`}
+			>
 				{editing ? (
 					<div
 						className="rounded-2xl overflow-hidden"
@@ -369,83 +376,103 @@ function MessageBubble({
 				    chip. PDFs always show as a textual chip. */}
 				{((msg._attachments && msg._attachments.length > 0) ||
 					(msg.imageUrls && msg.imageUrls.length > 0) ||
-					(msg.files && msg.files.length > 0)) && (() => {
-					// Source priority for thumbnails:
-					//   1. _attachments (in-session, data URLs) — fastest, fresh upload
-					//   2. imageUrls (persisted to Firestore, Storage HTTPS URLs) +
-					//      whatever PDF chips exist in `files`
-					//   3. files (text-only fallback, e.g. older messages from before
-					//      we wrote imageUrls)
-					let items;
-					if (Array.isArray(msg._attachments) && msg._attachments.length > 0) {
-						items = msg._attachments;
-					} else if (Array.isArray(msg.imageUrls) && msg.imageUrls.length > 0) {
-						items = [];
-						// PDFs aren't uploaded; surface them from the textual `files` array.
-						for (const f of msg.files || []) {
-							if (typeof f === "string" && f.includes("📄")) {
-								items.push({
-									kind: "pdf",
-									name: f.replace(/^[^a-zA-Z0-9]*\s*/, ""),
-								});
+					(msg.files && msg.files.length > 0)) &&
+					(() => {
+						// Source priority for thumbnails:
+						//   1. _attachments (in-session, data URLs) — fastest, fresh upload
+						//   2. imageUrls (persisted to Firestore, Storage HTTPS URLs) +
+						//      whatever PDF chips exist in `files`
+						//   3. files (text-only fallback, e.g. older messages from before
+						//      we wrote imageUrls)
+						let items;
+						if (
+							Array.isArray(msg._attachments) &&
+							msg._attachments.length > 0
+						) {
+							items = msg._attachments;
+						} else if (
+							Array.isArray(msg.imageUrls) &&
+							msg.imageUrls.length > 0
+						) {
+							items = [];
+							// PDFs aren't uploaded; surface them from the textual `files` array.
+							for (const f of msg.files || []) {
+								if (typeof f === "string" && f.includes("📄")) {
+									items.push({
+										kind: "pdf",
+										name: f.replace(/^[^a-zA-Z0-9]*\s*/, ""),
+									});
+								}
 							}
+							for (const u of msg.imageUrls) {
+								items.push({ kind: "image", name: u.name, dataUrl: u.url });
+							}
+						} else {
+							items = (msg.files || []).map((f) => ({
+								kind:
+									typeof f === "string" && f.includes("📄") ? "pdf" : "image",
+								name:
+									typeof f === "string"
+										? f.replace(/^[^a-zA-Z0-9]*\s*/, "")
+										: "file",
+								dataUrl: null,
+							}));
 						}
-						for (const u of msg.imageUrls) {
-							items.push({ kind: "image", name: u.name, dataUrl: u.url });
-						}
-					} else {
-						items = (msg.files || []).map((f) => ({
-							kind: typeof f === "string" && f.includes("📄") ? "pdf" : "image",
-							name: typeof f === "string" ? f.replace(/^[^a-zA-Z0-9]*\s*/, "") : "file",
-							dataUrl: null,
-						}));
-					}
-					return (
-						<div
-							className={`flex flex-wrap gap-1.5 mt-2 ${isUser ? "justify-end" : ""}`}
-						>
-							{items.map((item, i) =>
-								item.kind === "image" && item.dataUrl ? (
-									<button
-										key={i}
-										onClick={() => msg._onPreview && msg._onPreview(item.dataUrl)}
-										title={item.name}
-										aria-label={`Preview ${item.name}`}
-										className="rounded-lg overflow-hidden flex-shrink-0 transition-transform hover:scale-105"
-										style={{
-											width: 56,
-											height: 56,
-											border: "1px solid var(--color-border)",
-											background: "var(--color-bg)",
-											padding: 0,
-											cursor: "zoom-in",
-										}}
-									>
-										<img
-											src={item.dataUrl}
-											alt={item.name}
-											style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-										/>
-									</button>
-								) : (
-									<span
-										key={i}
-										className="text-xs px-2 py-1 rounded-lg inline-flex items-center gap-1"
-										style={{
-											background: "var(--color-bg)",
-											border: "1px solid var(--color-border)",
-											color: "var(--color-muted)",
-										}}
-										title={item.name}
-									>
-										{item.kind === "pdf" ? "📄" : "🖼"}{" "}
-										{(item.name || "").replace(/^[^a-zA-Z0-9]*\s*/, "").slice(0, 28)}
-									</span>
-								),
-							)}
-						</div>
-					);
-				})()}
+						return (
+							<div
+								className={`flex flex-wrap gap-1.5 mt-2 ${isUser ? "justify-end" : ""}`}
+							>
+								{items.map((item, i) =>
+									item.kind === "image" && item.dataUrl ? (
+										<button
+											key={i}
+											onClick={() =>
+												msg._onPreview && msg._onPreview(item.dataUrl)
+											}
+											title={item.name}
+											aria-label={`Preview ${item.name}`}
+											className="rounded-lg overflow-hidden flex-shrink-0 transition-transform hover:scale-105"
+											style={{
+												width: 56,
+												height: 56,
+												border: "1px solid var(--color-border)",
+												background: "var(--color-bg)",
+												padding: 0,
+												cursor: "zoom-in",
+											}}
+										>
+											<img
+												src={item.dataUrl}
+												alt={item.name}
+												style={{
+													width: "100%",
+													height: "100%",
+													objectFit: "cover",
+													display: "block",
+												}}
+											/>
+										</button>
+									) : (
+										<span
+											key={i}
+											className="text-xs px-2 py-1 rounded-lg inline-flex items-center gap-1"
+											style={{
+												background: "var(--color-bg)",
+												border: "1px solid var(--color-border)",
+												color: "var(--color-muted)",
+											}}
+											title={item.name}
+										>
+											{item.kind === "pdf" ? "📄" : "🖼"}{" "}
+											{(item.name || "")
+												.replace(/^[^a-zA-Z0-9]*\s*/, "")
+												.slice(0, 28)}
+										</span>
+									),
+								)}
+							</div>
+						);
+					})()}
 
 				{/* Thinking panel */}
 				{msg.steps && msg.steps.length > 0 && (
@@ -525,26 +552,50 @@ function MessageBubble({
 						{!isUser && (
 							<>
 								<button
-									onClick={() => onFeedback?.(msg, msg.feedback === "up" ? null : "up")}
-									title={msg.feedback === "up" ? "Remove rating" : "Good response"}
+									onClick={() =>
+										onFeedback?.(msg, msg.feedback === "up" ? null : "up")
+									}
+									title={
+										msg.feedback === "up" ? "Remove rating" : "Good response"
+									}
 									className="p-1.5 rounded-lg transition-all hover:opacity-80"
 									style={{
-										color: msg.feedback === "up" ? "#16a34a" : "var(--color-muted)",
-										background: msg.feedback === "up" ? "rgba(22,163,74,0.12)" : "transparent",
+										color:
+											msg.feedback === "up" ? "#16a34a" : "var(--color-muted)",
+										background:
+											msg.feedback === "up"
+												? "rgba(22,163,74,0.12)"
+												: "transparent",
 									}}
 								>
-									<ThumbsUp size={13} fill={msg.feedback === "up" ? "currentColor" : "none"} />
+									<ThumbsUp
+										size={13}
+										fill={msg.feedback === "up" ? "currentColor" : "none"}
+									/>
 								</button>
 								<button
-									onClick={() => onFeedback?.(msg, msg.feedback === "down" ? null : "down")}
-									title={msg.feedback === "down" ? "Remove rating" : "Bad response"}
+									onClick={() =>
+										onFeedback?.(msg, msg.feedback === "down" ? null : "down")
+									}
+									title={
+										msg.feedback === "down" ? "Remove rating" : "Bad response"
+									}
 									className="p-1.5 rounded-lg transition-all hover:opacity-80"
 									style={{
-										color: msg.feedback === "down" ? "#dc2626" : "var(--color-muted)",
-										background: msg.feedback === "down" ? "rgba(220,38,38,0.12)" : "transparent",
+										color:
+											msg.feedback === "down"
+												? "#dc2626"
+												: "var(--color-muted)",
+										background:
+											msg.feedback === "down"
+												? "rgba(220,38,38,0.12)"
+												: "transparent",
 									}}
 								>
-									<ThumbsDown size={13} fill={msg.feedback === "down" ? "currentColor" : "none"} />
+									<ThumbsDown
+										size={13}
+										fill={msg.feedback === "down" ? "currentColor" : "none"}
+									/>
 								</button>
 							</>
 						)}
@@ -615,16 +666,23 @@ async function collectHistoryAttachments(messages) {
 				for (const a of m._attachments) {
 					if (a.kind !== "image" || !a.dataUrl) continue;
 					const [meta, data] = String(a.dataUrl).split(",");
-					const mediaType = (meta.match(/data:([^;]+)/) || [])[1] || "image/jpeg";
+					const mediaType =
+						(meta.match(/data:([^;]+)/) || [])[1] || "image/jpeg";
 					if (data) fromAtt.push({ base64: data, mediaType, name: a.name });
 				}
 				if (fromAtt.length) images = fromAtt;
 			}
-			if (images.length === 0 && Array.isArray(m.imageUrls) && m.imageUrls.length) {
+			if (
+				images.length === 0 &&
+				Array.isArray(m.imageUrls) &&
+				m.imageUrls.length
+			) {
 				const fetched = await Promise.all(
 					m.imageUrls.map(async (u) => {
 						const e = await fetchUrlAsBase64(u.url);
-						return e ? { base64: e.base64, mediaType: e.mediaType, name: u.name } : null;
+						return e
+							? { base64: e.base64, mediaType: e.mediaType, name: u.name }
+							: null;
 					}),
 				);
 				images = fetched.filter(Boolean);
@@ -679,7 +737,13 @@ async function userImageToTripoFormat(img) {
 }
 
 // ─── Main ChatInterface ────────────────────────────────────────────────────────
-export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTriggerRef, onCompactingChange, onReportModalChange }) {
+export default function ChatInterface({
+	onShowUpgrade,
+	onShowAuth,
+	compactTriggerRef,
+	onCompactingChange,
+	onReportModalChange,
+}) {
 	const { user, userDoc } = useAuth();
 	const {
 		messages,
@@ -707,18 +771,29 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	const [showContextModal, setShowContextModal] = useState(false);
 	const [activeReport, setActiveReport] = useState(null);
 	const [showReportModal, setShowReportModal] = useState(false);
+	// Phone breakpoint, matching Tailwind's md. Drives the report-modal side
+	// padding (full-screen modal on mobile means no gutter).
+	const [isNarrowViewport, setIsNarrowViewport] = useState(
+		() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches,
+	);
+	useEffect(() => {
+		const mq = window.matchMedia("(max-width: 767px)");
+		const onChange = (e) => setIsNarrowViewport(e.matches);
+		mq.addEventListener("change", onChange);
+		return () => mq.removeEventListener("change", onChange);
+	}, []);
 	// Report modal presentation: 'sideBySide' (chat stays visible to the
 	// left, modal occupies a draggable portion of the viewport on the right)
 	// vs 'full' (classic immersive full-screen with backdrop). Default to
 	// sideBySide so users can keep answering Claude's clarifying questions
 	// without dismissing the report.
-	const [reportLayout, setReportLayout] = useState('sideBySide');
+	const [reportLayout, setReportLayout] = useState("sideBySide");
 	// User-adjustable width for the side-by-side modal, as a percentage of
 	// the viewport. Persisted to localStorage so a user's preferred split
 	// sticks across sessions. Clamped to [30, 90] on read + resize.
 	const [reportWidthPct, setReportWidthPctRaw] = useState(() => {
 		try {
-			const raw = window.localStorage.getItem('reportWidthPct');
+			const raw = window.localStorage.getItem("reportWidthPct");
 			const n = raw ? parseFloat(raw) : NaN;
 			if (Number.isFinite(n) && n >= 30 && n <= 90) return n;
 		} catch {}
@@ -730,7 +805,9 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	const setReportWidthPct = (n) => {
 		const clamped = Math.max(30, Math.min(90, n));
 		setReportWidthPctRaw(clamped);
-		try { window.localStorage.setItem('reportWidthPct', String(clamped)); } catch {}
+		try {
+			window.localStorage.setItem("reportWidthPct", String(clamped));
+		} catch {}
 	};
 	// Ref-mirrored activeReport so callbacks (openReport, etc.) can read
 	// the latest value without depending on activeReport in their dep
@@ -745,18 +822,19 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	// startRodinJob can read the latest value at call time without
 	// becoming dependent on userDoc (which churns on every settings
 	// save and would otherwise recreate the callback unnecessarily).
-	const modelProviderPrefRef = useRef('auto');
+	const modelProviderPrefRef = useRef("auto");
 	useEffect(() => {
-		modelProviderPrefRef.current = userDoc?.preferences?.modelProvider || 'auto';
+		modelProviderPrefRef.current =
+			userDoc?.preferences?.modelProvider || "auto";
 	}, [userDoc?.preferences?.modelProvider]);
 
 	// Remember the mode the user was on before flipping into Find so the
 	// back button knows where to return. Updates on every mode change
 	// EXCEPT when entering find. Defaults to 'buy' so a deep-link directly
 	// into find still has somewhere sensible to fall back to.
-	const previousModeRef = useRef('buy');
+	const previousModeRef = useRef("buy");
 	useEffect(() => {
-		if (activeMode !== 'find') previousModeRef.current = activeMode;
+		if (activeMode !== "find") previousModeRef.current = activeMode;
 	}, [activeMode]);
 
 	// Notify the parent (App.js) whenever the report modal opens or closes
@@ -764,7 +842,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	// split the full screen. App.js restores the user's prior sidebar state
 	// when the modal closes.
 	useEffect(() => {
-		if (typeof onReportModalChange === 'function') {
+		if (typeof onReportModalChange === "function") {
 			onReportModalChange(showReportModal);
 		}
 	}, [showReportModal, onReportModalChange]);
@@ -795,7 +873,10 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 		if (newVin && prevVin && newVin !== "UNKNOWN" && prevVin !== "UNKNOWN") {
 			return newVin === prevVin;
 		}
-		const norm = (s) => String(s || "").trim().toLowerCase();
+		const norm = (s) =>
+			String(s || "")
+				.trim()
+				.toLowerCase();
 		return (
 			!!newVehicle.year &&
 			String(newVehicle.year) === String(prev.year) &&
@@ -811,78 +892,106 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	// into openReport so the modal keeps showing the SAME car the user has been
 	// discussing — without regenerating 3D or losing uploaded photos. Used by
 	// BOTH analysis paths (runAnalysis with images, handleSend text-only).
-	const resolveFollowupContext = useCallback((newReport, sessionId, newAttachments = []) => {
-		const newVehicle = newReport?.vehicle || null;
-		const sameVehicle = isSameVehicleAsActive(newVehicle);
-		const prev = activeReportRef.current;
+	const resolveFollowupContext = useCallback(
+		(newReport, sessionId, newAttachments = []) => {
+			const newVehicle = newReport?.vehicle || null;
+			const sameVehicle = isSameVehicleAsActive(newVehicle);
+			const prev = activeReportRef.current;
 
-		// Photos: prefer this turn's new attachments. If none, inherit from
-		// the prior report (same vehicle) → session-ref cache → message
-		// walk-back. Slug guard on session-ref prevents cross-vehicle leakage.
-		let userImages = (newAttachments || []).filter(
-			(a) => a?.kind === "image" && a?.dataUrl,
-		);
-		const newVin = (newVehicle?.vin || "").toUpperCase();
-		if (userImages.length === 0 && sameVehicle && Array.isArray(prev?.userImages) && prev.userImages.length > 0) {
-			userImages = prev.userImages;
-		}
-		if (
-			userImages.length === 0 &&
-			sessionUserImagesRef.current?.sessionId === sessionId &&
-			Array.isArray(sessionUserImagesRef.current.images) &&
-			sessionUserImagesRef.current.images.length > 0 &&
-			// Allow if the ref has no VIN tag yet, OR if the VIN matches.
-			(!sessionUserImagesRef.current.vin || sessionUserImagesRef.current.vin === newVin || sameVehicle)
-		) {
-			userImages = sessionUserImagesRef.current.images;
-		}
-		if (userImages.length === 0) {
-			for (let i = messages.length - 1; i >= 0; i--) {
-				const m = messages[i];
-				if (m.role === "assistant" && Array.isArray(m._userImages) && m._userImages.length > 0) {
-					userImages = m._userImages;
-					break;
-				}
-				if (m.role === "user" && Array.isArray(m._attachments)) {
-					const imgs = m._attachments.filter((a) => a.kind === "image" && a.dataUrl);
-					if (imgs.length > 0) {
-						userImages = imgs;
+			// Photos: prefer this turn's new attachments. If none, inherit from
+			// the prior report (same vehicle) → session-ref cache → message
+			// walk-back. Slug guard on session-ref prevents cross-vehicle leakage.
+			let userImages = (newAttachments || []).filter(
+				(a) => a?.kind === "image" && a?.dataUrl,
+			);
+			const newVin = (newVehicle?.vin || "").toUpperCase();
+			if (
+				userImages.length === 0 &&
+				sameVehicle &&
+				Array.isArray(prev?.userImages) &&
+				prev.userImages.length > 0
+			) {
+				userImages = prev.userImages;
+			}
+			if (
+				userImages.length === 0 &&
+				sessionUserImagesRef.current?.sessionId === sessionId &&
+				Array.isArray(sessionUserImagesRef.current.images) &&
+				sessionUserImagesRef.current.images.length > 0 &&
+				// Allow if the ref has no VIN tag yet, OR if the VIN matches.
+				(!sessionUserImagesRef.current.vin ||
+					sessionUserImagesRef.current.vin === newVin ||
+					sameVehicle)
+			) {
+				userImages = sessionUserImagesRef.current.images;
+			}
+			if (userImages.length === 0) {
+				for (let i = messages.length - 1; i >= 0; i--) {
+					const m = messages[i];
+					if (
+						m.role === "assistant" &&
+						Array.isArray(m._userImages) &&
+						m._userImages.length > 0
+					) {
+						userImages = m._userImages;
+						break;
+					}
+					if (m.role === "user" && Array.isArray(m._attachments)) {
+						const imgs = m._attachments.filter(
+							(a) => a.kind === "image" && a.dataUrl,
+						);
+						if (imgs.length > 0) {
+							userImages = imgs;
+							break;
+						}
+					}
+					if (
+						m.role === "user" &&
+						Array.isArray(m.imageUrls) &&
+						m.imageUrls.length > 0
+					) {
+						userImages = m.imageUrls.map((u) => ({
+							kind: "image",
+							name: u.name,
+							dataUrl: u.url,
+						}));
 						break;
 					}
 				}
-				if (m.role === "user" && Array.isArray(m.imageUrls) && m.imageUrls.length > 0) {
-					userImages = m.imageUrls.map((u) => ({ kind: "image", name: u.name, dataUrl: u.url }));
-					break;
-				}
 			}
-		}
 
-		// Cache for next followup. Tag with VIN (not slug) so trim drift
-		// across turns doesn't invalidate the cache.
-		if (userImages.length > 0) {
-			sessionUserImagesRef.current = {
-				sessionId,
-				vin: newVin || null,
-				images: userImages,
+			// Cache for next followup. Tag with VIN (not slug) so trim drift
+			// across turns doesn't invalidate the cache.
+			if (userImages.length > 0) {
+				sessionUserImagesRef.current = {
+					sessionId,
+					vin: newVin || null,
+					images: userImages,
+				};
+			}
+
+			// 3D model + provider: only inherit when same vehicle. Otherwise
+			// the report is about a different car and needs its own 3D.
+			const inheritedGlbUrl = sameVehicle ? prev?.glbUrl || null : null;
+			const inheritedModelStatus = sameVehicle
+				? prev?.modelStatus || null
+				: null;
+			const inheritedModelProvider = sameVehicle
+				? prev?.modelProvider || null
+				: null;
+			const reuse3DModel = sameVehicle && !!inheritedGlbUrl;
+
+			return {
+				sameVehicle,
+				userImages,
+				inheritedGlbUrl,
+				inheritedModelStatus,
+				inheritedModelProvider,
+				reuse3DModel,
 			};
-		}
-
-		// 3D model + provider: only inherit when same vehicle. Otherwise
-		// the report is about a different car and needs its own 3D.
-		const inheritedGlbUrl = sameVehicle ? prev?.glbUrl || null : null;
-		const inheritedModelStatus = sameVehicle ? prev?.modelStatus || null : null;
-		const inheritedModelProvider = sameVehicle ? prev?.modelProvider || null : null;
-		const reuse3DModel = sameVehicle && !!inheritedGlbUrl;
-
-		return {
-			sameVehicle,
-			userImages,
-			inheritedGlbUrl,
-			inheritedModelStatus,
-			inheritedModelProvider,
-			reuse3DModel,
-		};
-	}, [messages, isSameVehicleAsActive]);
+		},
+		[messages, isSameVehicleAsActive],
+	);
 
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -901,9 +1010,13 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					if (file) {
 						const ext = item.type.split("/")[1] || "png";
 						pasted.push(
-							new File([file], `screenshot-${Date.now()}-${pasted.length}.${ext}`, {
-								type: item.type,
-							}),
+							new File(
+								[file],
+								`screenshot-${Date.now()}-${pasted.length}.${ext}`,
+								{
+									type: item.type,
+								},
+							),
 						);
 					}
 				}
@@ -949,13 +1062,16 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 		for (const s of sources) {
 			if (typeof s !== "string") continue;
 			const m = s.match(VIN_RE);
-			if (m) { vin = m[0]; break; }
+			if (m) {
+				vin = m[0];
+				break;
+			}
 		}
 		if (!vin) return null;
 		try {
 			const decoded = await decodeVin(vin);
 			if (!decoded?.block) return null;
-			return { block: decoded.block, source: decoded.source || 'unknown' };
+			return { block: decoded.block, source: decoded.source || "unknown" };
 		} catch {
 			return null;
 		}
@@ -1007,9 +1123,13 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			const effectiveGlbUrl =
 				glbUrl || (sameVehicle ? prevActiveReport?.glbUrl : null) || null;
 			const effectiveModelStatus =
-				modelStatus || (sameVehicle ? prevActiveReport?.modelStatus : null) || null;
+				modelStatus ||
+				(sameVehicle ? prevActiveReport?.modelStatus : null) ||
+				null;
 			const effectiveModelProvider =
-				modelProvider || (sameVehicle ? prevActiveReport?.modelProvider : null) || null;
+				modelProvider ||
+				(sameVehicle ? prevActiveReport?.modelProvider : null) ||
+				null;
 
 			setActiveReport({
 				report,
@@ -1047,11 +1167,12 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 						setActiveReport((prev) =>
 							prev
 								? {
-									...prev,
-									glbUrl: cached.glbUrl,
-									modelStatus: "CacheHit",
-									modelProvider: cached.modelProvider || prev.modelProvider || null,
-								}
+										...prev,
+										glbUrl: cached.glbUrl,
+										modelStatus: "CacheHit",
+										modelProvider:
+											cached.modelProvider || prev.modelProvider || null,
+									}
 								: prev,
 						);
 						return;
@@ -1066,8 +1187,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					//      modal flips from infinite "Generating 3D model…"
 					//      into a real, fresh render. New GLB lands in R2
 					//      and the cache works again for every future user.
-					const haveImage =
-						Array.isArray(userImages) && userImages.length > 0;
+					const haveImage = Array.isArray(userImages) && userImages.length > 0;
 					const haveVin = !!report?.vehicle?.vin;
 
 					// If we have neither a user image NOR a VIN to fall back
@@ -1134,13 +1254,28 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	// through `cost` and re-persisted to the assistant message via `messageId`,
 	// since startRodinJob runs *after* the message has already been saved.
 	const startRodinJob = useCallback(
-		async (imageBase64, imageMediaType, _prompt, vehicle = null, cost = null, sessionId = null, messageId = null, images = null) => {
+		async (
+			imageBase64,
+			imageMediaType,
+			_prompt,
+			vehicle = null,
+			cost = null,
+			sessionId = null,
+			messageId = null,
+			images = null,
+		) => {
 			rodinAbort.current?.abort();
 			const controller = new AbortController();
 			rodinAbort.current = controller;
 			const isDev =
 				typeof window !== "undefined" && process.env.NODE_ENV !== "production";
-			if (isDev) console.log("%c[3d]", "color:#2563eb;font-weight:bold", "startRodinJob fired", { vehicle, imageCount: images?.length || (imageBase64 ? 1 : 0) });
+			if (isDev)
+				console.log(
+					"%c[3d]",
+					"color:#2563eb;font-weight:bold",
+					"startRodinJob fired",
+					{ vehicle, imageCount: images?.length || (imageBase64 ? 1 : 0) },
+				);
 			try {
 				const result = await generateOrFetch3D({
 					vehicle,
@@ -1170,10 +1305,21 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					signal: controller.signal,
 				});
 				if (controller.signal.aborted) {
-					if (isDev) console.log("%c[3d]", "color:#dc2626;font-weight:bold", "startRodinJob aborted before result applied");
+					if (isDev)
+						console.log(
+							"%c[3d]",
+							"color:#dc2626;font-weight:bold",
+							"startRodinJob aborted before result applied",
+						);
 					return;
 				}
-				if (isDev) console.log("%c[3d]", "color:#2563eb;font-weight:bold", "startRodinJob got result", result);
+				if (isDev)
+					console.log(
+						"%c[3d]",
+						"color:#2563eb;font-weight:bold",
+						"startRodinJob got result",
+						result,
+					);
 				if (result?.glbUrl) {
 					// CRITICAL: in production, never hand a raw Tripo CDN URL
 					// to the renderer. Tripo's CDN sends no Access-Control-
@@ -1190,28 +1336,34 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					// procedural fallback / "+ Add Image" CTA rather than
 					// a crash.
 					const isTripoUrl = /tripo3d\.com\//.test(result.glbUrl);
-					const isProxied = result.glbUrl.startsWith('/dev-glb-proxy');
+					const isProxied = result.glbUrl.startsWith("/dev-glb-proxy");
 					const safeToRender = isProxied || !isTripoUrl;
 
 					if (!safeToRender) {
 						console.warn(
-							'[3d] Refusing to render raw Tripo URL in production (would CORS-fail). R2 is likely misconfigured — set MODELS_PUBLIC_BASE in Cloudflare Pages env.',
+							"[3d] Refusing to render raw Tripo URL in production (would CORS-fail). R2 is likely misconfigured — set MODELS_PUBLIC_BASE in Cloudflare Pages env.",
 						);
 						setActiveReport((prev) =>
-							prev ? { ...prev, modelStatus: 'Failed' } : prev,
+							prev ? { ...prev, modelStatus: "Failed" } : prev,
 						);
-						updateLastMessage((prev) => ({ ...prev, _modelStatus: 'Failed' }));
+						updateLastMessage((prev) => ({ ...prev, _modelStatus: "Failed" }));
 					} else {
 						setActiveReport((prev) => {
 							if (!prev) {
-								if (isDev) console.log("%c[3d]", "color:#dc2626;font-weight:bold", "activeReport is null — modal closed before GLB landed; will still stamp on message so reopen works");
+								if (isDev)
+									console.log(
+										"%c[3d]",
+										"color:#dc2626;font-weight:bold",
+										"activeReport is null — modal closed before GLB landed; will still stamp on message so reopen works",
+									);
 								return prev;
 							}
 							return {
 								...prev,
 								glbUrl: result.glbUrl,
 								modelStatus: "Done",
-								modelProvider: result.modelProvider || prev.modelProvider || null,
+								modelProvider:
+									result.modelProvider || prev.modelProvider || null,
 							};
 						});
 						// In-memory always: lets close-and-reopen of the modal in the
@@ -1220,7 +1372,8 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 							...prev,
 							_glbUrl: result.glbUrl,
 							_modelStatus: "Done",
-							_modelProvider: result.modelProvider || prev._modelProvider || null,
+							_modelProvider:
+								result.modelProvider || prev._modelProvider || null,
 						}));
 					}
 
@@ -1283,7 +1436,13 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					}));
 				}
 			} catch (err) {
-				if (isDev) console.warn("%c[3d]", "color:#dc2626;font-weight:bold", "startRodinJob threw", err);
+				if (isDev)
+					console.warn(
+						"%c[3d]",
+						"color:#dc2626;font-weight:bold",
+						"startRodinJob threw",
+						err,
+					);
 				// 3D API not configured or failed — procedural fallback stays
 			}
 		},
@@ -1325,9 +1484,13 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			} catch {
 				return;
 			}
-			const mediaType = file.type || 'image/jpeg';
-			const base64 = String(dataUrl).split(',')[1] || '';
-			const newImage = { kind: 'image', name: file.name || 'vehicle.jpg', dataUrl };
+			const mediaType = file.type || "image/jpeg";
+			const base64 = String(dataUrl).split(",")[1] || "";
+			const newImage = {
+				kind: "image",
+				name: file.name || "vehicle.jpg",
+				dataUrl,
+			};
 
 			// 1. Update activeReport state so the modal switches off the CTA
 			//    and into the existing "Generating 3D model…" overlay.
@@ -1336,7 +1499,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					? {
 							...prev,
 							userImages: [...(prev.userImages || []), newImage],
-							modelStatus: 'Pending',
+							modelStatus: "Pending",
 						}
 					: prev,
 			);
@@ -1351,7 +1514,9 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 				updateMessage(sessionId, messageId, {
 					_userImages: [...(activeReport.userImages || []), newImage],
 					_attachments: [
-						...((Array.isArray(activeReport._attachments) && activeReport._attachments) || []),
+						...((Array.isArray(activeReport._attachments) &&
+							activeReport._attachments) ||
+							[]),
 						newImage,
 					],
 				});
@@ -1364,17 +1529,21 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			//    immediate display path until then.
 			if (user?.uid && sessionId && messageId) {
 				try {
-					const uploaded = await uploadVehicleImages(user.uid, sessionId, [file]);
+					const uploaded = await uploadVehicleImages(user.uid, sessionId, [
+						file,
+					]);
 					if (uploaded?.length) {
 						updateMessage(sessionId, messageId, {
 							imageUrls: [
-								...((Array.isArray(activeReport.imageUrls) && activeReport.imageUrls) || []),
+								...((Array.isArray(activeReport.imageUrls) &&
+									activeReport.imageUrls) ||
+									[]),
 								...uploaded,
 							],
 						});
 					}
 				} catch (err) {
-					console.warn('[3d] post-hoc image upload to Storage failed', err);
+					console.warn("[3d] post-hoc image upload to Storage failed", err);
 				}
 			}
 
@@ -1382,7 +1551,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			startRodinJob(
 				base64,
 				mediaType,
-				`${activeReport.vehicleLabel || 'vehicle'} exterior, realistic car`,
+				`${activeReport.vehicleLabel || "vehicle"} exterior, realistic car`,
 				activeReport.report.vehicle,
 				null,
 				sessionId || null,
@@ -1475,7 +1644,11 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					});
 					userAttachments.push({ kind: "image", name: img.name, dataUrl });
 				} catch {
-					userAttachments.push({ kind: "image", name: img.name, dataUrl: null });
+					userAttachments.push({
+						kind: "image",
+						name: img.name,
+						dataUrl: null,
+					});
 				}
 			}
 
@@ -1527,7 +1700,10 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 				uploadVehicleImages(user.uid, sessionId, compressedImages)
 					.then((uploaded) => {
 						if (uploaded.length === 0) return;
-						const imageUrls = uploaded.map((u) => ({ url: u.url, name: u.name }));
+						const imageUrls = uploaded.map((u) => ({
+							url: u.url,
+							name: u.name,
+						}));
 						updateMessage(sessionId, userMessageId, { imageUrls });
 					})
 					.catch(() => {});
@@ -1588,13 +1764,20 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			}
 
 			if (compressedImages.length > 0) {
-				const labelMany = compressedImages.length > 1 ? `${compressedImages.length} images` : compressedImages[0].name;
+				const labelMany =
+					compressedImages.length > 1
+						? `${compressedImages.length} images`
+						: compressedImages[0].name;
 				pushStep(`Processing ${labelMany}`);
 				try {
 					for (const file of compressedImages) {
 						const b64 = await fileToBase64(file);
 						const mt = getMediaType(file);
-						processedImages.push({ base64: b64, mediaType: mt, name: file.name });
+						processedImages.push({
+							base64: b64,
+							mediaType: mt,
+							name: file.name,
+						});
 					}
 					// First image is the reference for downstream things that still
 					// expect a single image (Tripo3D job, modal preview color sample).
@@ -1649,8 +1832,12 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 				if (vinResult) {
 					vinDecodeBlock = vinResult.block;
 					vinDecodeSource = vinResult.source;
-					if (vinDecodeSource === 'vincario') {
-						cost.add('Vincario decode', FIXED_COSTS.vincario_decode, 'paid VIN decode');
+					if (vinDecodeSource === "vincario") {
+						cost.add(
+							"Vincario decode",
+							FIXED_COSTS.vincario_decode,
+							"paid VIN decode",
+						);
 					}
 					// First line of the block is "(source: X)"; second is year make model
 					const short = vinDecodeBlock.split("\n")[1] || "decoded";
@@ -1767,7 +1954,11 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 
 					// Resolve same-vehicle inheritance via the shared helper —
 					// same logic used by handleSend's text-only followup path.
-					const ctx = resolveFollowupContext(report, sessionId, userAttachments);
+					const ctx = resolveFollowupContext(
+						report,
+						sessionId,
+						userAttachments,
+					);
 					const userImagesForReport = ctx.userImages;
 					// Confirm Edits path forces the prior model to come through
 					// even if VIN drift or vehicle change would otherwise miss.
@@ -1815,15 +2006,23 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					// when the user reopens. (Trim drift across turns means the
 					// slug cache often misses on followups.)
 					if (reuse3DModel && inheritedGlbUrl && sessionId && persistedId) {
-						const isTripoUrlStr = typeof inheritedGlbUrl === "string" && /tripo3d\.com\//.test(inheritedGlbUrl);
+						const isTripoUrlStr =
+							typeof inheritedGlbUrl === "string" &&
+							/tripo3d\.com\//.test(inheritedGlbUrl);
 						// Replicate's CDN URLs (replicate.delivery/...) are signed
 						// with a ~1h TTL — much shorter than Tripo's ~24h. We mark
 						// these with a 50-min expiry so the cache doesn't hand
 						// back a 404'ing URL on the next reopen.
-						const isReplicateUrlStr = typeof inheritedGlbUrl === "string" && /replicate\.delivery\//.test(inheritedGlbUrl);
+						const isReplicateUrlStr =
+							typeof inheritedGlbUrl === "string" &&
+							/replicate\.delivery\//.test(inheritedGlbUrl);
 						const patch = {
 							glbUrl: inheritedGlbUrl,
-							glbUrlSource: isTripoUrlStr ? "tripo" : isReplicateUrlStr ? "replicate" : "r2",
+							glbUrlSource: isTripoUrlStr
+								? "tripo"
+								: isReplicateUrlStr
+									? "replicate"
+									: "r2",
 							modelProvider: inheritedModelProvider || null,
 						};
 						if (isTripoUrlStr) {
@@ -1840,7 +2039,16 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					// any VinAudit/Tripo/Replicate costs land on the same message.
 					if (!reuse3DModel) {
 						const prompt = `${vLabel} exterior, realistic car`;
-						startRodinJob(imageBase64, imageMediaType, prompt, report.vehicle, cost, sessionId, persistedId, processedImages);
+						startRodinJob(
+							imageBase64,
+							imageMediaType,
+							prompt,
+							report.vehicle,
+							cost,
+							sessionId,
+							persistedId,
+							processedImages,
+						);
 					}
 				}
 			} catch (err) {
@@ -1895,13 +2103,17 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	const compactConversation = useCallback(async () => {
 		if (isAnalyzing) return;
 		const visible = messages.filter(
-			(m) => (m.role === "user" || m.role === "assistant") && (m.text || m.content),
+			(m) =>
+				(m.role === "user" || m.role === "assistant") && (m.text || m.content),
 		);
 		if (visible.length === 0) return;
 		onCompactingChange?.(true);
 		try {
 			const transcript = visible
-				.map((m) => `${m.role.toUpperCase()}: ${(m.text || m.content || "").slice(0, 4000)}`)
+				.map(
+					(m) =>
+						`${m.role.toUpperCase()}: ${(m.text || m.content || "").slice(0, 4000)}`,
+				)
 				.join("\n\n");
 
 			let summary = "";
@@ -1925,7 +2137,9 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 				if (typeof chunk === "string") summary += chunk;
 			}
 			summary = summary.replace(/<REPORT>[\s\S]*?<\/REPORT>/g, "").trim();
-			if (!summary) summary = "(Compaction returned an empty summary; the original conversation is preserved in your session history.)";
+			if (!summary)
+				summary =
+					"(Compaction returned an empty summary; the original conversation is preserved in your session history.)";
 
 			setMessages([
 				{
@@ -1989,8 +2203,12 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			// Also decode any VIN in the free-text path so the model gets ground truth.
 			const vinResult = await resolveVinDecode(text);
 			const vinDecodeBlock = vinResult?.block || null;
-			if (vinResult?.source === 'vincario') {
-				cost.add('Vincario decode', FIXED_COSTS.vincario_decode, 'paid VIN decode');
+			if (vinResult?.source === "vincario") {
+				cost.add(
+					"Vincario decode",
+					FIXED_COSTS.vincario_decode,
+					"paid VIN decode",
+				);
 			}
 
 			// Re-attach the most recent CARFAX + photos to this follow-up turn
@@ -2061,13 +2279,21 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 					// followup's slug often drifts from the initial due to Claude
 					// rewording the trim).
 					if (ctx.inheritedGlbUrl && sessionId && persistedId) {
-						const isTripoUrlStr = typeof ctx.inheritedGlbUrl === "string" && /tripo3d\.com\//.test(ctx.inheritedGlbUrl);
+						const isTripoUrlStr =
+							typeof ctx.inheritedGlbUrl === "string" &&
+							/tripo3d\.com\//.test(ctx.inheritedGlbUrl);
 						// Replicate signs CDN URLs for ~1h; tag them as such so
 						// the read-side knows to treat the cache as stale shortly.
-						const isReplicateUrlStr = typeof ctx.inheritedGlbUrl === "string" && /replicate\.delivery\//.test(ctx.inheritedGlbUrl);
+						const isReplicateUrlStr =
+							typeof ctx.inheritedGlbUrl === "string" &&
+							/replicate\.delivery\//.test(ctx.inheritedGlbUrl);
 						const patch = {
 							glbUrl: ctx.inheritedGlbUrl,
-							glbUrlSource: isTripoUrlStr ? "tripo" : isReplicateUrlStr ? "replicate" : "r2",
+							glbUrlSource: isTripoUrlStr
+								? "tripo"
+								: isReplicateUrlStr
+									? "replicate"
+									: "r2",
 							modelProvider: ctx.inheritedModelProvider || null,
 						};
 						if (isTripoUrlStr) {
@@ -2150,8 +2376,12 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 
 			const vinResult = await resolveVinDecode(carfaxText, newText);
 			const vinDecodeBlock = vinResult?.block || null;
-			if (vinResult?.source === 'vincario') {
-				cost.add('Vincario decode', FIXED_COSTS.vincario_decode, 'paid VIN decode');
+			if (vinResult?.source === "vincario") {
+				cost.add(
+					"Vincario decode",
+					FIXED_COSTS.vincario_decode,
+					"paid VIN decode",
+				);
 			}
 
 			// Pull attachments from the truncated history so a re-analyze still
@@ -2160,14 +2390,17 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			// remain). The msg object itself is preferred over collectHistory…
 			// because edit always re-uses the EDITED message's own attachments.
 			let editCarfaxText = carfaxText;
-			let editImages = imageBase64 && imageMediaType
-				? [{ base64: imageBase64, mediaType: imageMediaType }]
-				: [];
-			if (!editCarfaxText && typeof msg.carfaxText === "string") editCarfaxText = msg.carfaxText;
+			let editImages =
+				imageBase64 && imageMediaType
+					? [{ base64: imageBase64, mediaType: imageMediaType }]
+					: [];
+			if (!editCarfaxText && typeof msg.carfaxText === "string")
+				editCarfaxText = msg.carfaxText;
 			if (editImages.length === 0) {
 				const recovered = await collectHistoryAttachments([msg]);
 				if (recovered.images.length) editImages = recovered.images;
-				if (!editCarfaxText && recovered.carfaxText) editCarfaxText = recovered.carfaxText;
+				if (!editCarfaxText && recovered.carfaxText)
+					editCarfaxText = recovered.carfaxText;
 			}
 
 			let fullText = "";
@@ -2275,8 +2508,16 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 	// width. Transition is disabled mid-drag so the chat edge follows the
 	// cursor 1:1.
 	const sideModalActive =
-		showReportModal && activeReport && activeReport.mode !== 'sell' && reportLayout === 'sideBySide';
-	const chatSidePadding = sideModalActive ? `${reportWidthPct}vw` : 0;
+		showReportModal &&
+		activeReport &&
+		activeReport.mode !== "sell" &&
+		reportLayout === "sideBySide";
+	// On a phone the report modal is full-screen (see ReportModal's isNarrow
+	// path), so the chat behind it must NOT be padded to one side — otherwise
+	// the hidden chat is laid out against a 62vw gutter and reflows oddly the
+	// moment the modal closes. isNarrowViewport gates the padding off below md.
+	const chatSidePadding =
+		sideModalActive && !isNarrowViewport ? `${reportWidthPct}vw` : 0;
 
 	return (
 		<div
@@ -2284,13 +2525,13 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			style={{
 				background: "var(--color-bg)",
 				paddingRight: chatSidePadding,
-				transition: isResizingReport ? 'none' : undefined,
+				transition: isResizingReport ? "none" : undefined,
 			}}
 		>
 			{/* Mode tabs — Buy / Sell / Find. Hidden entirely when in Find
 			    so the search surface gets the full canvas; the Find panel
 			    surfaces its own "Back" affordance for returning to chat. */}
-			{activeMode !== 'find' && (
+			{activeMode !== "find" && (
 				<div
 					className="flex-shrink-0 flex items-center justify-center py-3 px-4 safe-top mode-tabs-row"
 					style={{ borderBottom: "1px solid var(--color-border)" }}
@@ -2303,328 +2544,409 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			    Find lives on the right. CSS handles the slide animation
 			    based on data-mode. Track height fills the remaining space
 			    below ModeTabs. */}
-			<div
-				className="flex-1 overflow-hidden"
-				style={{ position: 'relative' }}
-			>
+			<div className="flex-1 overflow-hidden" style={{ position: "relative" }}>
 				<div
 					className="mode-track"
-					data-mode={activeMode === 'find' ? 'find' : 'chat'}
+					data-mode={activeMode === "find" ? "find" : "chat"}
 				>
 					{/* Chat panel — covers Buy and Sell modes */}
 					<div className="flex flex-col h-full">
-
-			{/* Messages */}
-			<div className="flex-1 overflow-y-auto px-4 py-6">
-				{isEmpty ? (
-					<div className="h-full flex flex-col items-center justify-center text-center px-4">
-						<div className="w-16 h-16 rounded-3xl bg-blue-600 flex items-center justify-center mb-4 shadow-lg">
-							<Car size={28} className="text-white" />
-						</div>
-						<h1
-							className="text-2xl font-bold mb-2"
-							style={{ color: "var(--color-text)" }}
-						>
-							{activeMode === 'sell' ? 'Sell Your Car' : 'VinCritiq'}
-						</h1>
-						<p
-							className="text-base mb-1"
-							style={{ color: "var(--color-muted)" }}
-						>
-							{activeMode === 'sell'
-								? 'Find the best price to sell your vehicle'
-								: 'AI-powered vehicle deal analysis'}
-						</p>
-						<p
-							className="text-sm max-w-md"
-							style={{ color: "var(--color-muted)" }}
-						>
-							{activeMode === 'sell'
-								? "Describe your vehicle (year, make, model, mileage, condition). Add a CARFAX PDF or photos for a more accurate quote. We'll compare prices across private party, trade-in, instant-offer, marketplace, and auction channels."
-								: "Upload a CARFAX PDF and/or a vehicle photo to get a professional assessment — pricing, financing, depreciation, and a deal verdict."}
-						</p>
-						<div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-lg w-full">
-							{(activeMode === 'sell'
-								? [
-										{ title: 'Best Channel', desc: 'Private party / trade-in / instant / marketplace / auction' },
-										{ title: 'Improvements', desc: 'High-ROI upgrades before listing' },
-										{ title: 'Market Context', desc: 'Demand, days to sell, competition' },
-								  ]
-								: [
-										{ title: 'Deal Rating', desc: 'Great / Good / Fair / Bad classification' },
-										{ title: 'Price Analysis', desc: 'vs. KBB & market average' },
-										{ title: 'Depreciation', desc: '1, 3, and 5 year projections' },
-								  ]
-							).map((c) => (
-								<div
-									key={c.title}
-									className="rounded-xl p-3 text-left"
-									style={{
-										background: "var(--color-surface)",
-										border: "1px solid var(--color-border)",
-									}}
-								>
-									<div
-										className="font-semibold text-sm mb-0.5"
+						{/* Messages */}
+						<div className="flex-1 overflow-y-auto px-4 py-6">
+							{isEmpty ? (
+								<div className="h-full flex flex-col items-center justify-center text-center px-4">
+									<div className="w-16 h-16 rounded-3xl bg-blue-600 flex items-center justify-center mb-4 shadow-lg">
+										<Car size={28} className="text-white" />
+									</div>
+									<h1
+										className="text-2xl font-bold mb-2"
 										style={{ color: "var(--color-text)" }}
 									>
-										{c.title}
-									</div>
-									<div
-										className="text-xs"
+										{activeMode === "sell" ? "Sell Your Car" : "VinCritiq"}
+									</h1>
+									<p
+										className="text-base mb-1"
 										style={{ color: "var(--color-muted)" }}
 									>
-										{c.desc}
+										{activeMode === "sell"
+											? "Find the best price to sell your vehicle"
+											: "AI-powered vehicle deal analysis"}
+									</p>
+									<p
+										className="text-sm max-w-md"
+										style={{ color: "var(--color-muted)" }}
+									>
+										{activeMode === "sell"
+											? "Describe your vehicle (year, make, model, mileage, condition). Add a CARFAX PDF or photos for a more accurate quote. We'll compare prices across private party, trade-in, instant-offer, marketplace, and auction channels."
+											: "Upload a CARFAX PDF and/or a vehicle photo to get a professional assessment — pricing, financing, depreciation, and a deal verdict."}
+									</p>
+									<div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-lg w-full">
+										{(activeMode === "sell"
+											? [
+													{
+														title: "Best Channel",
+														desc: "Private party / trade-in / instant / marketplace / auction",
+													},
+													{
+														title: "Improvements",
+														desc: "High-ROI upgrades before listing",
+													},
+													{
+														title: "Market Context",
+														desc: "Demand, days to sell, competition",
+													},
+												]
+											: [
+													{
+														title: "Deal Rating",
+														desc: "Great / Good / Fair / Bad classification",
+													},
+													{
+														title: "Price Analysis",
+														desc: "vs. KBB & market average",
+													},
+													{
+														title: "Depreciation",
+														desc: "1, 3, and 5 year projections",
+													},
+												]
+										).map((c) => (
+											<div
+												key={c.title}
+												className="rounded-xl p-3 text-left"
+												style={{
+													background: "var(--color-surface)",
+													border: "1px solid var(--color-border)",
+												}}
+											>
+												<div
+													className="font-semibold text-sm mb-0.5"
+													style={{ color: "var(--color-text)" }}
+												>
+													{c.title}
+												</div>
+												<div
+													className="text-xs"
+													style={{ color: "var(--color-muted)" }}
+												>
+													{c.desc}
+												</div>
+											</div>
+										))}
 									</div>
 								</div>
-							))}
+							) : (
+								<div className="max-w-3xl mx-auto">
+									{messages.map((msg, i) => {
+										const isLast = i === messages.length - 1;
+										// canRetry only matters for the last assistant message — that's
+										// where the regenerate button renders. Look back to find the
+										// previous user message and check whether its file bytes are
+										// still available in memory.
+										let canRetry = true;
+										if (isLast && msg.role === "assistant") {
+											for (let j = i - 1; j >= 0; j--) {
+												if (messages[j].role === "user") {
+													canRetry = canRegenerateFromUserMsg(messages[j]);
+													break;
+												}
+											}
+										}
+										// Inject the _onPreview callback so MessageBubble's image
+										// thumbnails can open the lightbox without needing the
+										// component to know about ChatInterface state.
+										const msgWithPreview = msg._attachments
+											? { ...msg, _onPreview: (url) => setPreviewImageUrl(url) }
+											: msg;
+										return (
+											<MessageBubble
+												key={msg.id || i}
+												msg={msgWithPreview}
+												onEdit={handleEdit}
+												onRetry={handleRetry}
+												onViewReport={(m) => {
+													// Pull every cached field straight off the assistant message
+													// so close-then-reopen of the report restores the same vehicle
+													// photos and the same generated GLB. Falls back to the previous
+													// user message's _attachments when the assistant message itself
+													// does not carry _userImages.
+													const label = m.report
+														? `${m.report.vehicle?.year || ""} ${m.report.vehicle?.make || ""} ${m.report.vehicle?.model || ""}`.trim()
+														: null;
+													// Resolve userImages with cascading fallbacks:
+													//   1. _userImages on the assistant message (in-session)
+													//   2. _attachments on the prior user message (in-session)
+													//   3. imageUrls on the prior user message (Firestore-persisted,
+													//      Storage HTTPS URLs — survives refresh / chat-switch)
+													let userImages = Array.isArray(m._userImages)
+														? m._userImages
+														: null;
+													if (!userImages || userImages.length === 0) {
+														// Walk back through ALL prior user messages — text-only
+														// followups (e.g. "full cash for this vehicle") have no
+														// imageUrls/_attachments, but an earlier turn in the same
+														// chat may have uploaded photos. Don't break after the
+														// first user message; keep searching.
+														const idx = messages.lastIndexOf(m);
+														for (let j = idx - 1; j >= 0; j--) {
+															const prevM = messages[j];
+															if (prevM.role !== "user") continue;
+															if (
+																Array.isArray(prevM._attachments) &&
+																prevM._attachments.some((a) => a.dataUrl)
+															) {
+																userImages = prevM._attachments.filter(
+																	(a) => a.kind === "image" && a.dataUrl,
+																);
+																break;
+															}
+															if (
+																Array.isArray(prevM.imageUrls) &&
+																prevM.imageUrls.length > 0
+															) {
+																userImages = prevM.imageUrls.map((u) => ({
+																	kind: "image",
+																	name: u.name,
+																	dataUrl: u.url,
+																}));
+																break;
+															}
+															// keep walking — the photos might live on an earlier turn
+														}
+													}
+													// glbUrl resolution:
+													//   - in-memory _glbUrl is always preferred (already proxied
+													//     for dev, R2-direct in prod).
+													//   - Firestore glbUrl: in dev, route Tripo URLs through
+													//     /dev-glb-proxy (browser CORS bypass). In prod, refuse
+													//     them — Tripo CDN serves no CORS headers, so loading
+													//     directly hard-errors. lookupCachedModel inside openReport
+													//     can still recover an R2 URL from models3d/{slug}.
+													//   - glbUrlExpiresAt: ignore the persisted URL if past
+													//     expiry (Tripo's CloudFront signatures last ~24h).
+													const isTripoUrl = (u) =>
+														typeof u === "string" && /tripo3d\.com\//.test(u);
+													const isReplicateUrl = (u) =>
+														typeof u === "string" &&
+														/replicate\.delivery\//.test(u);
+													const isDevEnv =
+														process.env.NODE_ENV !== "production";
+													let resolvedGlbUrl = m._glbUrl || null;
+													if (!resolvedGlbUrl && m.glbUrl) {
+														const expiresAt = m.glbUrlExpiresAt;
+														const expired =
+															typeof expiresAt === "number" &&
+															Date.now() > expiresAt;
+														// Replicate URLs without a recorded expiry come from messages
+														// saved before we tracked Replicate's ~1h TTL. Treat them as
+														// definitively stale so the preflight doesn't CORS-fail on them
+														// in the console — fall through to lookupCachedModel instead.
+														const replicateNoExpiry =
+															isReplicateUrl(m.glbUrl) &&
+															typeof expiresAt !== "number";
+														if (!expired && !replicateNoExpiry) {
+															if (isTripoUrl(m.glbUrl)) {
+																if (isDevEnv) {
+																	resolvedGlbUrl = `/dev-glb-proxy?url=${encodeURIComponent(m.glbUrl)}`;
+																}
+																// prod: leave null — fall through to lookupCachedModel
+															} else {
+																resolvedGlbUrl = m.glbUrl;
+															}
+														}
+													}
+													openReport(
+														m.report,
+														m._vehicleColor || null,
+														label ||
+															m._vehicleLabel ||
+															activeReport?.vehicleLabel,
+														m._img64,
+														m._imgMt,
+														resolvedGlbUrl,
+														m._modelStatus || (resolvedGlbUrl ? "Done" : null),
+														userImages || [],
+														m.id || null,
+														activeSessionId || null,
+														m._modelProvider || m.modelProvider || null,
+													);
+												}}
+												isLast={isLast}
+												isAnalyzing={isAnalyzing}
+												canRetry={canRetry}
+												onFeedback={(m, value) =>
+													recordFeedback(activeSessionId, m.id, value)
+												}
+											/>
+										);
+									})}
+									<div ref={bottomRef} />
+								</div>
+							)}
+						</div>
+
+						{/* Input area */}
+						<div className="px-3 sm:px-4 pb-4 sm:pb-6 pt-2 safe-bottom">
+							<div
+								className="max-w-3xl mx-auto rounded-2xl overflow-hidden"
+								style={{
+									border: "1px solid var(--color-border)",
+									background: "var(--color-surface)",
+									boxShadow: "0 4px 24px rgba(0,0,0,0.08)",
+								}}
+							>
+								<textarea
+									ref={textareaRef}
+									value={input}
+									onChange={(e) => {
+										setInput(e.target.value);
+										const el = textareaRef.current;
+										if (el) {
+											el.style.height = "auto";
+											el.style.height = Math.min(el.scrollHeight, 220) + "px";
+										}
+									}}
+									onKeyDown={handleKey}
+									placeholder={
+										activeMode === "sell"
+											? carfaxFile || vehicleImages.length > 0
+												? "Add context (mileage, condition, modifications, target sale window…) or press Enter to analyze"
+												: "Describe your vehicle: year/make/model/trim/mileage/condition, upload a CARFAX & photos…"
+											: carfaxFile || vehicleImages.length > 0
+												? "Add context (asking price, APR, loan term…) or press Enter to analyze"
+												: "Ask about a vehicle, upload a CARFAX & photos, or paste a screenshot…"
+									}
+									rows={1}
+									disabled={isAnalyzing}
+									className="w-full px-4 pt-4 pb-2 text-sm resize-none outline-none disabled:opacity-60"
+									style={{
+										background: "transparent",
+										color: "var(--color-text)",
+										minHeight: 52,
+										maxHeight: 220,
+										overflowY: "auto",
+									}}
+								/>
+								<div className="flex items-center justify-between px-3 pb-3 gap-2">
+									<UploadArea
+										carfaxFile={carfaxFile}
+										vehicleImages={vehicleImages}
+										onCarfaxChange={setCarfaxFile}
+										onVehicleImagesChange={setVehicleImages}
+										onPreviewImage={(url) => setPreviewImageUrl(url)}
+									/>
+									<button
+										onClick={handleSend}
+										disabled={
+											isAnalyzing ||
+											(!input.trim() &&
+												!carfaxFile &&
+												vehicleImages.length === 0)
+										}
+										className="w-9 h-9 rounded-xl flex items-center justify-center transition-all disabled:opacity-30"
+										style={{ background: "var(--color-accent)" }}
+									>
+										<Send size={16} className="text-white" />
+									</button>
+								</div>
+							</div>
+							<p
+								className="text-center text-xs mt-2"
+								style={{ color: "var(--color-muted)" }}
+							>
+								VinCritiq provides estimates for informational purposes only.
+								Always verify with a licensed dealer.
+							</p>
 						</div>
 					</div>
-				) : (
-					<div className="max-w-3xl mx-auto">
-						{messages.map((msg, i) => {
-							const isLast = i === messages.length - 1;
-							// canRetry only matters for the last assistant message — that's
-							// where the regenerate button renders. Look back to find the
-							// previous user message and check whether its file bytes are
-							// still available in memory.
-							let canRetry = true;
-							if (isLast && msg.role === "assistant") {
-								for (let j = i - 1; j >= 0; j--) {
-									if (messages[j].role === "user") {
-										canRetry = canRegenerateFromUserMsg(messages[j]);
-										break;
-									}
-								}
-							}
-							// Inject the _onPreview callback so MessageBubble's image
-							// thumbnails can open the lightbox without needing the
-							// component to know about ChatInterface state.
-							const msgWithPreview = msg._attachments
-								? { ...msg, _onPreview: (url) => setPreviewImageUrl(url) }
-								: msg;
-							return (
-								<MessageBubble
-									key={msg.id || i}
-									msg={msgWithPreview}
-									onEdit={handleEdit}
-									onRetry={handleRetry}
-									onViewReport={(m) => {
-										// Pull every cached field straight off the assistant message
-										// so close-then-reopen of the report restores the same vehicle
-										// photos and the same generated GLB. Falls back to the previous
-										// user message's _attachments when the assistant message itself
-										// does not carry _userImages.
-										const label = m.report
-											? `${m.report.vehicle?.year || ""} ${m.report.vehicle?.make || ""} ${m.report.vehicle?.model || ""}`.trim()
-											: null;
-										// Resolve userImages with cascading fallbacks:
-										//   1. _userImages on the assistant message (in-session)
-										//   2. _attachments on the prior user message (in-session)
-										//   3. imageUrls on the prior user message (Firestore-persisted,
-										//      Storage HTTPS URLs — survives refresh / chat-switch)
-										let userImages = Array.isArray(m._userImages) ? m._userImages : null;
-										if (!userImages || userImages.length === 0) {
-											// Walk back through ALL prior user messages — text-only
-											// followups (e.g. "full cash for this vehicle") have no
-											// imageUrls/_attachments, but an earlier turn in the same
-											// chat may have uploaded photos. Don't break after the
-											// first user message; keep searching.
-											const idx = messages.lastIndexOf(m);
-											for (let j = idx - 1; j >= 0; j--) {
-												const prevM = messages[j];
-												if (prevM.role !== "user") continue;
-												if (Array.isArray(prevM._attachments) && prevM._attachments.some((a) => a.dataUrl)) {
-													userImages = prevM._attachments.filter((a) => a.kind === "image" && a.dataUrl);
-													break;
-												}
-												if (Array.isArray(prevM.imageUrls) && prevM.imageUrls.length > 0) {
-													userImages = prevM.imageUrls.map((u) => ({ kind: "image", name: u.name, dataUrl: u.url }));
-													break;
-												}
-												// keep walking — the photos might live on an earlier turn
-											}
-										}
-										// glbUrl resolution:
-										//   - in-memory _glbUrl is always preferred (already proxied
-										//     for dev, R2-direct in prod).
-										//   - Firestore glbUrl: in dev, route Tripo URLs through
-										//     /dev-glb-proxy (browser CORS bypass). In prod, refuse
-										//     them — Tripo CDN serves no CORS headers, so loading
-										//     directly hard-errors. lookupCachedModel inside openReport
-										//     can still recover an R2 URL from models3d/{slug}.
-										//   - glbUrlExpiresAt: ignore the persisted URL if past
-										//     expiry (Tripo's CloudFront signatures last ~24h).
-										const isTripoUrl = (u) =>
-											typeof u === "string" && /tripo3d\.com\//.test(u);
-										const isReplicateUrl = (u) =>
-											typeof u === "string" && /replicate\.delivery\//.test(u);
-										const isDevEnv = process.env.NODE_ENV !== "production";
-										let resolvedGlbUrl = m._glbUrl || null;
-										if (!resolvedGlbUrl && m.glbUrl) {
-											const expiresAt = m.glbUrlExpiresAt;
-											const expired =
-												typeof expiresAt === "number" && Date.now() > expiresAt;
-											// Replicate URLs without a recorded expiry come from messages
-											// saved before we tracked Replicate's ~1h TTL. Treat them as
-											// definitively stale so the preflight doesn't CORS-fail on them
-											// in the console — fall through to lookupCachedModel instead.
-											const replicateNoExpiry =
-												isReplicateUrl(m.glbUrl) && typeof expiresAt !== "number";
-											if (!expired && !replicateNoExpiry) {
-												if (isTripoUrl(m.glbUrl)) {
-													if (isDevEnv) {
-														resolvedGlbUrl = `/dev-glb-proxy?url=${encodeURIComponent(m.glbUrl)}`;
-													}
-													// prod: leave null — fall through to lookupCachedModel
-												} else {
-													resolvedGlbUrl = m.glbUrl;
-												}
-											}
-										}
-										openReport(
-											m.report,
-											m._vehicleColor || null,
-											label || m._vehicleLabel || activeReport?.vehicleLabel,
-											m._img64,
-											m._imgMt,
-											resolvedGlbUrl,
-											m._modelStatus || (resolvedGlbUrl ? "Done" : null),
-											userImages || [],
-											m.id || null,
-											activeSessionId || null,
-											m._modelProvider || m.modelProvider || null,
-										);
-									}}
-									isLast={isLast}
-									isAnalyzing={isAnalyzing}
-									canRetry={canRetry}
-									onFeedback={(m, value) =>
-										recordFeedback(activeSessionId, m.id, value)
-									}
-								/>
-							);
-						})}
-						<div ref={bottomRef} />
-					</div>
-				)}
-			</div>
-
-			{/* Input area */}
-			<div className="px-3 sm:px-4 pb-4 sm:pb-6 pt-2 safe-bottom">
-				<div
-					className="max-w-3xl mx-auto rounded-2xl overflow-hidden"
-					style={{
-						border: "1px solid var(--color-border)",
-						background: "var(--color-surface)",
-						boxShadow: "0 4px 24px rgba(0,0,0,0.08)",
-					}}
-				>
-					<textarea
-						ref={textareaRef}
-						value={input}
-						onChange={(e) => {
-							setInput(e.target.value);
-							const el = textareaRef.current;
-							if (el) {
-								el.style.height = "auto";
-								el.style.height = Math.min(el.scrollHeight, 220) + "px";
-							}
-						}}
-						onKeyDown={handleKey}
-						placeholder={
-							activeMode === 'sell'
-								? (carfaxFile || vehicleImages.length > 0
-									? "Add context (mileage, condition, modifications, target sale window…) or press Enter to analyze"
-									: "Describe your vehicle: year/make/model/trim/mileage/condition, upload a CARFAX & photos…")
-								: (carfaxFile || vehicleImages.length > 0
-									? "Add context (asking price, APR, loan term…) or press Enter to analyze"
-									: "Ask about a vehicle, upload a CARFAX & photos, or paste a screenshot…")
-						}
-						rows={1}
-						disabled={isAnalyzing}
-						className="w-full px-4 pt-4 pb-2 text-sm resize-none outline-none disabled:opacity-60"
-						style={{
-							background: "transparent",
-							color: "var(--color-text)",
-							minHeight: 52,
-							maxHeight: 220,
-							overflowY: "auto",
-						}}
-					/>
-					<div className="flex items-center justify-between px-3 pb-3 gap-2">
-						<UploadArea
-							carfaxFile={carfaxFile}
-							vehicleImages={vehicleImages}
-							onCarfaxChange={setCarfaxFile}
-							onVehicleImagesChange={setVehicleImages}
-							onPreviewImage={(url) => setPreviewImageUrl(url)}
-						/>
-						<button
-							onClick={handleSend}
-							disabled={
-								isAnalyzing ||
-								(!input.trim() && !carfaxFile && vehicleImages.length === 0)
-							}
-							className="w-9 h-9 rounded-xl flex items-center justify-center transition-all disabled:opacity-30"
-							style={{ background: "var(--color-accent)" }}
-						>
-							<Send size={16} className="text-white" />
-						</button>
-					</div>
-				</div>
-				<p
-					className="text-center text-xs mt-2"
-					style={{ color: "var(--color-muted)" }}
-				>
-					VinCritiq provides estimates for informational purposes only. Always
-					verify with a licensed dealer.
-				</p>
-			</div>
-
-					</div>{/* /chat panel */}
+					{/* /chat panel */}
 
 					{/* Find panel — listings search funnel */}
 					<div className="h-full">
 						<FindACarPanel
-							onBack={() => setActiveMode(previousModeRef.current || 'buy')}
+							onBack={() => setActiveMode(previousModeRef.current || "buy")}
 							onAnalyzeListing={(listing) => {
 								// Funnel into Buy: switch mode, drop a pre-filled
 								// "Analyze this VIN" prompt into the chat input, and
 								// kick off the analysis. CARFAX auto-fetch will run
 								// inside runAnalysis since it sees a VIN in the
 								// extra-text argument.
-								setActiveMode('buy');
+								setActiveMode("buy");
 								// Live listings routinely omit price, mileage, or trim —
 								// dealers withhold price ("call for price") and private
 								// sellers skip odometer readings. Interpolating blindly threw
 								// on `null.toLocaleString()` and took the whole panel down,
 								// so each field is optional and simply omitted when absent.
-								const num = (n) => (Number.isFinite(n) ? n.toLocaleString() : null);
+								const num = (n) =>
+									Number.isFinite(n) ? n.toLocaleString() : null;
 								const facts = [
 									`VIN: ${listing.vin}`,
-									num(listing.price) ? `asking $${num(listing.price)}` : 'asking price not listed',
-									num(listing.mileage) ? `${num(listing.mileage)} miles` : 'mileage not listed',
+									num(listing.price)
+										? `asking $${num(listing.price)}`
+										: "asking price not listed",
+									num(listing.mileage)
+										? `${num(listing.mileage)} miles`
+										: "mileage not listed",
 								];
-								const where = [listing.dealer?.city, listing.dealer?.state].filter(Boolean).join(', ');
+								const where = [listing.dealer?.city, listing.dealer?.state]
+									.filter(Boolean)
+									.join(", ");
 								if (listing.dealer?.name) {
-									facts.push(`at ${listing.dealer.name}${where ? ` in ${where}` : ''}`);
+									facts.push(
+										`at ${listing.dealer.name}${where ? ` in ${where}` : ""}`,
+									);
 								} else if (where) {
 									facts.push(`in ${where}`);
 								}
-								const name = [listing.year, listing.make, listing.model, listing.trim]
+								const name = [
+									listing.year,
+									listing.make,
+									listing.model,
+									listing.trim,
+								]
 									.filter(Boolean)
-									.join(' ');
-								const prompt = `Analyze this vehicle for me: ${name || 'this listing'}, ${facts.join(', ')}.`;
+									.join(" ");
+								const prompt = `Analyze this vehicle for me: ${name || "this listing"}, ${facts.join(", ")}.`;
 								setInput(prompt);
+
+								// CARFAX is deliberately NOT attached here.
+								//
+								// `listing.carfaxUrl` points at a carfax.com report page
+								// (text/html, and it 403s anything that isn't a real
+								// browser) — there is no PDF behind it to fetch or parse.
+								// Setting carfaxFile to a { name, url } object looks like it
+								// works but can't: the pipeline calls
+								// FileReader.readAsDataURL() and extractTextFromPDF() on it,
+								// both of which need a Blob. Both throw, both are caught, and
+								// the analysis silently proceeds with no CARFAX text while
+								// the UI shows a "CARFAX.pdf" chip — worse than showing
+								// nothing, because the report then claims history it never
+								// read. The link is surfaced on the listing card instead.
+								setCarfaxFile(null);
+
+								// The photo has to be materialised into a real File before
+								// the funnel can use it (compressImageFiles + FileReader both
+								// need a Blob), and the bytes have to come through our proxy
+								// because the host only allows CORS from ui.auto.dev.
+								// Fire-and-forget: a missing photo shouldn't block the
+								// prompt, so the input is already populated above.
+								setVehicleImages([]);
+								if (listing.primaryImage) {
+									fetchListingPhotoAsFile(
+										listing.primaryImage,
+										`${listing.vin || "listing"}.jpg`,
+									).then((file) => {
+										if (file) setVehicleImages([file]);
+									});
+								}
 								if (textareaRef.current) {
 									// Bump the textarea height so the long prefilled
 									// prompt is visible without the user needing to scroll.
 									setTimeout(() => {
 										const el = textareaRef.current;
 										if (el) {
-											el.style.height = 'auto';
-											el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+											el.style.height = "auto";
+											el.style.height = Math.min(el.scrollHeight, 220) + "px";
 											el.focus();
 										}
 									}, 360);
@@ -2632,8 +2954,10 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 							}}
 						/>
 					</div>
-				</div>{/* /mode-track */}
-			</div>{/* /track wrapper */}
+				</div>
+				{/* /mode-track */}
+			</div>
+			{/* /track wrapper */}
 
 			{showContextModal && (
 				<ContextModal
@@ -2647,7 +2971,10 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 				<div
 					onClick={() => setPreviewImageUrl(null)}
 					className="fixed inset-0 z-[60] flex items-center justify-center cursor-zoom-out"
-					style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(8px)" }}
+					style={{
+						background: "rgba(0,0,0,0.85)",
+						backdropFilter: "blur(8px)",
+					}}
 					role="dialog"
 					aria-label="Image preview"
 				>
@@ -2660,7 +2987,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 				</div>
 			)}
 
-			{showReportModal && activeReport && activeReport.mode === 'sell' && (
+			{showReportModal && activeReport && activeReport.mode === "sell" && (
 				<SellReportModal
 					report={activeReport.report}
 					vehicleLabel={activeReport.vehicleLabel}
@@ -2668,7 +2995,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 				/>
 			)}
 
-			{showReportModal && activeReport && activeReport.mode !== 'sell' && (
+			{showReportModal && activeReport && activeReport.mode !== "sell" && (
 				<ReportModal
 					report={activeReport.report}
 					vehicleColor={activeReport.vehicleColor}

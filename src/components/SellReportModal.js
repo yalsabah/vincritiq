@@ -276,6 +276,21 @@ export default function SellReportModal({ report, vehicleLabel, onClose }) {
   // that section, the modal narrows and the map slides in from the right.
   // Scrolling back up reverses it.
   const [showMap, setShowMap] = useState(false);
+  // On a phone the side-by-side map narrows the report pane to ~54% of a
+  // ~375px screen — the same one-word-per-line squeeze the buy modal had.
+  // Below md the map never slides in; the report keeps the full width.
+  const [isNarrow, setIsNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = (e) => setIsNarrow(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  // Effective flag used by the layout — the IntersectionObserver still tracks
+  // scroll position, but on a phone that never widens the modal.
+  const mapVisible = showMap && !isNarrow;
   const closeTimer = useRef(null);
   const scrollContainerRef = useRef(null);
   const whereToSellRef = useRef(null);
@@ -351,7 +366,7 @@ export default function SellReportModal({ report, vehicleLabel, onClose }) {
         onClick={(e) => e.stopPropagation()}
         className="flex gap-4 items-stretch transition-all duration-[450ms] ease-in-out"
         style={{
-          width: showMap ? 'min(1700px, 96vw)' : 'min(1000px, 92vw)',
+          width: mapVisible ? 'min(1700px, 96vw)' : 'min(1000px, 92vw)',
           height: '92vh',
         }}
       >
@@ -364,7 +379,7 @@ export default function SellReportModal({ report, vehicleLabel, onClose }) {
           // subtracting, the two children sum to 100% + gap and overflow
           // the wrapper, which can squeeze the map width and confuse the
           // Leaflet resize calculation. calc(% - 8px) splits the gap evenly.
-          width: showMap ? 'calc(54% - 8px)' : '100%',
+          width: mapVisible ? 'calc(54% - 8px)' : '100%',
           height: '100%',
         }}
       >
@@ -508,7 +523,7 @@ export default function SellReportModal({ report, vehicleLabel, onClose }) {
                 <span
                   className="text-[10px] transition-opacity duration-300 ml-1"
                   style={{
-                    opacity: showMap ? 0.7 : 0,
+                    opacity: mapVisible ? 0.7 : 0,
                     color: 'var(--color-accent)',
                   }}
                 >
@@ -710,7 +725,7 @@ export default function SellReportModal({ report, vehicleLabel, onClose }) {
           the first time showMap goes true. After that we keep it mounted
           (toggling visibility via styles) to preserve tile cache + user
           location so re-opening is instant. */}
-      <MapPane open={showMap} />
+      <MapPane open={mapVisible} />
       </div>
     </div>
   );

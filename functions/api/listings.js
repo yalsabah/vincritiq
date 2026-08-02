@@ -186,9 +186,13 @@ function normalizeListing(raw) {
     exteriorColor: vehicle.exteriorColor || null,
     condition: retail.used === false ? 'new' : 'used',
     cpo: Boolean(retail.cpo),
-    // A single hero image per listing. `photoCount` reports how many the
-    // source has, but only the primary URL is exposed, so that's what we show.
+    // Only ONE photo URL is ever exposed, even when photoCount says there are
+    // six — the feed gives `primaryImage` and a count, not a gallery. Both are
+    // surfaced: `photos` for rendering, `photoCount` so callers can tell
+    // "no photos" from "more exist that we can't reach".
     photos: retail.primaryImage ? [retail.primaryImage] : [],
+    primaryImage: retail.primaryImage || null,
+    photoCount: toNumber(retail.photoCount) || 0,
     dealer: {
       name: dealerName || 'Dealer',
       source: classifySource(dealerName),

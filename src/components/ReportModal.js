@@ -1123,6 +1123,22 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
   const isSide = layout === 'sideBySide';
   const [isResizing, setIsResizing] = useState(false);
 
+  // Phone breakpoint. On a narrow screen the side-by-side layout is unusable:
+  // a ~62vw panel with a 42%-wide visual pane leaves the report text about
+  // 140px wide, which wraps to one word per line. Below md the modal instead
+  // takes the full screen and stacks the visual above the report. Tracked in
+  // JS because the width and the flex direction are driven inline, not by
+  // classes that a media query could reach.
+  const [isNarrow, setIsNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = (e) => setIsNarrow(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
   // Drag-resize the side-by-side modal from its left edge. The width is
   // owned by the parent (ChatInterface) so the chat's right padding can
   // track it 1:1 during the drag. We disable the CSS transition mid-drag
@@ -1190,7 +1206,9 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
   // edge with width controlled by `layout` + `widthPct`. Toggling between
   // sideBySide and full just animates the width property — no class swap,
   // no remount, no snap.
-  const targetWidth = isSide ? `${widthPct}vw` : '100vw';
+  // On a phone the modal is always full-screen; the side-by-side width only
+  // applies on wider viewports.
+  const targetWidth = isNarrow ? '100vw' : isSide ? `${widthPct}vw` : '100vw';
   // Mount animation: slide in from the right via translateX. Once the
   // class is removed (after the animation finishes), width transitions
   // take over for any layout toggles.
@@ -1232,7 +1250,7 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
         {/* Resize handle on the left edge — only in side-by-side. A 6px hit
             zone that sits slightly outside the modal so it's easy to grab
             without occluding modal content. */}
-        {isSide && typeof onChangeWidthPct === 'function' && (
+        {isSide && !isNarrow && typeof onChangeWidthPct === 'function' && (
           <div
             onMouseDown={startResize}
             title="Drag to resize"
@@ -1248,12 +1266,18 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
           />
         )}
         <div
-          className={`flex w-full h-full ${exiting ? '' : 'modal-content-enter'}`}
+          className={`flex flex-col md:flex-row w-full h-full ${exiting ? '' : 'modal-content-enter'}`}
         >
-        {/* Left: Vehicle visual — theme-aware (white in light, dark in dark) */}
+        {/* Left: Vehicle visual — theme-aware (white in light, dark in dark).
+            On a phone this becomes a top banner (full width, capped height)
+            with the report scrolling beneath it, instead of a side column that
+            starves the text of horizontal space. */}
         <div
-          className="relative flex-shrink-0 overflow-hidden"
-          style={{ width: '42%', background: 'var(--color-surface)', borderRight: '1px solid var(--color-border)' }}
+          className="relative flex-shrink-0 overflow-hidden w-full md:w-[42%] h-[32vh] md:h-full"
+          style={{
+            background: 'var(--color-surface)',
+            [isNarrow ? 'borderBottom' : 'borderRight']: '1px solid var(--color-border)',
+          }}
         >
           <ViewTabs active={activeTab} onChange={setActiveTab} modelStatus={modelStatus} />
 
@@ -1271,9 +1295,13 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
             captureRef={captureRef}
           />
 
-          {/* Bottom gradient + info — theme-aware fade so text stays legible */}
+          {/* Bottom gradient + info — theme-aware fade so text stays legible.
+              Hidden on phones: the visual is only a 32vh banner there, so this
+              label overlay collides with the empty-state placeholder, and every
+              field it shows (year/make/model/trim/miles + verdict) is repeated
+              in the report header directly beneath the banner. */}
           <div
-            className="absolute bottom-0 left-0 right-0 p-6"
+            className="absolute bottom-0 left-0 right-0 p-6 hidden md:block"
             style={{ background: 'linear-gradient(transparent, var(--color-surface) 55%)' }}
           >
             <div className="font-bold text-xl leading-tight" style={{ color: 'var(--color-text)' }}>
@@ -1338,7 +1366,7 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
                 {/* Layout toggle — flip between side-by-side (chat visible)
                     and full-screen (immersive). Hidden when there's no
                     onChangeLayout callback, e.g. embedded usage. */}
-                {typeof onChangeLayout === 'function' && (
+                {typeof onChangeLayout === 'function' && !isNarrow && (
                   <button
                     onClick={() => onChangeLayout(isSide ? 'full' : 'sideBySide')}
                     title={isSide ? 'Expand to full screen' : 'Collapse to side panel'}
