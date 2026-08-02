@@ -6,8 +6,18 @@
     <link rel="icon" type="image/svg+xml" href="%PUBLIC_URL%/favicon.svg" />
     <link rel="alternate icon" href="%PUBLIC_URL%/favicon.ico" />
     <link rel="mask-icon" href="%PUBLIC_URL%/favicon.svg" color="#2563eb" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#2563eb" />
+    <!-- viewport-fit=cover lets the layout extend under the notch / home
+         indicator; the safe-area insets in index.css keep content clear of
+         them. Deliberately no maximum-scale or user-scalable=no — blocking
+         pinch-zoom breaks accessibility, and the iOS focus-zoom problem is
+         solved properly by using 16px inputs instead. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- Matches --color-bg per theme so the iOS/Android browser chrome blends
+         with the app instead of flashing brand blue. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f4ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111110" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta
       name="description"
       content="VinCritiq — AI vehicle deal analyst. Upload a CARFAX or photo and get an instant verdict on price, depreciation, and financing."
