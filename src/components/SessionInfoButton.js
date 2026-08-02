@@ -270,7 +270,10 @@ export default function SessionInfoButton({ messages, onPreviewImage, onCompact,
         aria-expanded={open}
       >
         <Info size={13} />
-        Session Info
+        {/* Label drops on phones — at 430px the header has to fit a menu
+            button, three mode tabs and this control on one row, and "Session
+            Info" is the least essential text there. */}
+        <span className="hidden sm:inline">Session Info</span>
         {stats.nearLimit && (
           <span
             title="Context near limit"

@@ -32,8 +32,9 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
   Search, Heart, Sparkles, ExternalLink, ArrowLeft, MapPin,
-  Loader2, AlertCircle, RefreshCw,
+  Loader2, AlertCircle, RefreshCw, SlidersHorizontal, X,
 } from 'lucide-react';
+import { useTheme } from '../contexts/ThemeContext';
 import {
   DISTANCE_OPTIONS,
   SOURCE_LABELS,
@@ -66,6 +67,26 @@ const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
 const FAVORITES_KEY = 'vincritiq.find.favorites';
 
+// Basemap palettes. The tile URL, the container background (visible while
+// tiles stream in, and in the gutters past the map edges), and the pin outline
+// all have to move together — a white pin ring vanishes on CARTO's light
+// basemap, and a slate-900 backdrop flashes dark behind a light map on every
+// pan.
+const MAP_THEME = {
+  dark: {
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    background: '#0f172a',
+    pinRing: '#ffffff',
+    pinShadow: 'rgba(0,0,0,0.4)',
+  },
+  light: {
+    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    background: '#e8e6e1',
+    pinRing: '#1a1a18',
+    pinShadow: 'rgba(0,0,0,0.25)',
+  },
+};
+
 // Sort options map onto Auto.dev's `sort` param (field.direction). Only the
 // fields the API documents as sortable are offered — an unsupported field is
 // rejected upstream rather than silently ignored.
@@ -95,8 +116,9 @@ const YEAR_CHOICES = Array.from(
 // currently-hovered listing. The hovered state has to look noticeably
 // different (size + price label) so the user's eye can follow the
 // hover → pin connection at a glance.
-function listingPin({ hovered, price, source }) {
+function listingPin({ hovered, price, source, theme = 'dark' }) {
   const color = SOURCE_LABELS[source]?.color || '#2563eb';
+  const { pinRing, pinShadow } = MAP_THEME[theme];
   if (hovered) {
     const dollars =
       price == null ? '—' : price >= 1000 ? `$${Math.round(price / 1000)}K` : `$${price}`;
@@ -109,8 +131,8 @@ function listingPin({ hovered, price, source }) {
         font-weight:700;
         padding:4px 8px;
         border-radius:999px;
-        border:2px solid #fff;
-        box-shadow:0 4px 12px rgba(0,0,0,0.5);
+        border:2px solid ${pinRing};
+        box-shadow:0 4px 12px ${pinShadow};
         white-space:nowrap;
         transform:translateY(-2px);
       ">${dollars}</div>`,
@@ -125,8 +147,8 @@ function listingPin({ hovered, price, source }) {
       height:12px;
       border-radius:50%;
       background:${color};
-      border:2px solid #fff;
-      box-shadow:0 0 0 1px rgba(0,0,0,0.4);
+      border:2px solid ${pinRing};
+      box-shadow:0 0 0 1px ${pinShadow};
     "></div>`,
     iconSize: [16, 16],
     iconAnchor: [8, 8],
@@ -358,6 +380,11 @@ function ListingCard({ listing, hovered, favorited, onHover, onLeave, onAnalyze,
 }
 
 export default function FindACarPanel({ onAnalyzeListing, onBack }) {
+  // Basemap follows the app theme. Falls back to dark if the provider is
+  // somehow absent so the map never renders untiled.
+  const { dark } = useTheme() || { dark: true };
+  const tileTheme = dark ? 'dark' : 'light';
+
   // ── Filter state ──────────────────────────────────────────────────
   const [q, setQ] = useState('');
   const [zip, setZip] = useState('');
@@ -406,6 +433,21 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
     }
   });
   const [viewingFavorites, setViewingFavorites] = useState(false);
+  // Phone-only: the filter rail is an off-canvas sheet below md.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // A couple of strings have to shorten on phones, and text content can't be
+  // swapped with a CSS breakpoint the way layout can. Tracked in JS against
+  // the same 640px boundary Tailwind's `sm` uses.
+  const [isNarrow, setIsNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 639px)');
+    const onChange = (e) => setIsNarrow(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   useEffect(() => {
     try {
@@ -650,11 +692,16 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
   const notConfigured = error?.code === 'listings_not_configured';
 
   return (
-    <div className="flex flex-col h-full" style={{ background: 'var(--color-bg)' }}>
+    // NOTE: the sheet + backdrop below use `absolute`, not `fixed`.
+    // .mode-track carries a transform, which makes it the containing block
+    // for fixed-position descendants — a `fixed` sheet was being positioned
+    // against the 200%-wide track and landed off-screen. Anchoring to this
+    // panel instead keeps it where the user can see it.
+    <div className="flex flex-col h-full relative overflow-hidden" style={{ background: 'var(--color-bg)' }}>
       {/* Top toolbar: back button + search box. Find takes over the
           full canvas (sidebar + tabs are hidden by the parent), so this
           row is the user's only navigation affordance back to chat. */}
-      <div className="flex-shrink-0 px-6 py-4 flex items-center gap-3" style={{ borderBottom: '1px solid var(--color-border)' }}>
+      <div className="flex-shrink-0 px-3 md:px-6 py-3 md:py-4 flex items-center gap-2 md:gap-3 safe-top" style={{ borderBottom: '1px solid var(--color-border)' }}>
         {typeof onBack === 'function' && (
           <button
             onClick={onBack}
@@ -668,7 +715,7 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
             }}
           >
             <ArrowLeft size={13} />
-            Back
+            <span className="hidden sm:inline">Back</span>
           </button>
         )}
         <div className="flex-1 max-w-2xl mx-auto relative">
@@ -684,7 +731,7 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search by make and model — e.g. “Toyota Camry” — or paste a VIN"
+            placeholder={isNarrow ? "Search make, model, or VIN" : "Search by make and model — e.g. “Toyota Camry” — or paste a VIN"}
             className="w-full pl-9 pr-3 py-2.5 rounded-full text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
             style={{
               background: 'var(--color-surface)',
@@ -693,6 +740,19 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
             }}
           />
         </div>
+
+        <button
+          onClick={() => setFiltersOpen(true)}
+          aria-label="Show filters"
+          className="md:hidden flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-2 rounded-full text-xs font-semibold"
+          style={{
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            color: 'var(--color-text)',
+          }}
+        >
+          <SlidersHorizontal size={13} />
+        </button>
 
         {/* Saved listings. Doubles as the toggle into the saved-only view, so
             the heart on each card has somewhere to lead. */}
@@ -713,7 +773,7 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
             fill={favorites.size > 0 ? (viewingFavorites ? '#fff' : '#ef4444') : 'none'}
             color={viewingFavorites ? '#fff' : favorites.size > 0 ? '#ef4444' : 'currentColor'}
           />
-          Saved
+          <span className="hidden sm:inline">Saved</span>
           {favorites.size > 0 && (
             <span
               className="inline-flex items-center justify-center rounded-full text-[10px] font-bold px-1.5"
@@ -731,13 +791,57 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
       </div>
 
       {/* Main 3-pane layout */}
+      {filtersOpen && (
+        <div
+          className="md:hidden absolute inset-0"
+          style={{ background: 'rgba(0,0,0,0.5)', zIndex: 1000 }}
+          onClick={() => setFiltersOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       <div className="flex-1 flex overflow-hidden">
         {/* Filters sidebar */}
+        {/* Filters. A 260px rail alongside a map and a card grid doesn't fit a
+            phone, so below md it becomes an off-canvas sheet toggled by the
+            Filters button in the toolbar. */}
         <aside
-          className="flex-shrink-0 overflow-y-auto"
-          style={{ width: 260, borderRight: '1px solid var(--color-border)', background: 'var(--color-surface)' }}
+          className={[
+            'flex-shrink-0 overflow-y-auto',
+            'max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:shadow-2xl',
+          ].join(' ')}
+          // The open/closed transform is an inline style rather than Tailwind
+          // translate utilities. Toggling between `translate-x-0` and
+          // `-translate-x-full` in the same variant leaves two equal-specificity
+          // rules whose winner depends on Tailwind's emit order, not on the
+          // order they're listed here — in practice the sheet stayed parked at
+          // -100% even with only the open class applied. Inline wins outright.
+          style={{
+            width: 260,
+            borderRight: '1px solid var(--color-border)',
+            background: 'var(--color-surface)',
+            ...(isNarrow
+              ? {
+                  transform: filtersOpen ? 'translateX(0)' : 'translateX(-100%)',
+                  transition: 'transform 200ms ease',
+                  // Above Leaflet. Its internal panes run to z-index 800 inside
+                  // the map's stacking context, so a modest z-45 sheet was
+                  // being painted over by the tiles.
+                  zIndex: 1001,
+                }
+              : null),
+          }}
         >
-          <div className="p-4 space-y-5">
+          <div className="p-4 space-y-5 safe-bottom">
+            <button
+              onClick={() => setFiltersOpen(false)}
+              className="md:hidden w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold"
+              style={{ border: '1px solid var(--color-border)', color: 'var(--color-text)' }}
+            >
+              <X size={13} />
+              Close filters
+            </button>
+
             <div>
               <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--color-muted)' }}>Location</div>
               <div className="flex items-center gap-1.5">
@@ -975,11 +1079,17 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
               maxZoom={14}
               scrollWheelZoom
               zoomAnimation
-              style={{ height: '100%', width: '100%', background: '#0f172a' }}
+              style={{ height: '100%', width: '100%', background: MAP_THEME[tileTheme].background }}
             >
+              {/* CARTO ships matched light/dark basemaps. `key` forces a
+                  remount on theme change: TileLayer does support url updates,
+                  but remounting also clears the cached tiles of the old
+                  palette, which otherwise linger until they're panned out of
+                  view. */}
               <TileLayer
+                key={tileTheme}
                 attribution='&copy; OpenStreetMap &copy; CARTO'
-                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                url={MAP_THEME[tileTheme].url}
                 subdomains="abcd"
                 maxZoom={19}
               />
@@ -989,7 +1099,7 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
                 <Marker
                   key={l.vin}
                   position={[l.dealer.lat, l.dealer.lng]}
-                  icon={listingPin({ hovered: hoveredVin === l.vin, price: l.price, source: l.dealer.source })}
+                  icon={listingPin({ hovered: hoveredVin === l.vin, price: l.price, source: l.dealer.source, theme: tileTheme })}
                   eventHandlers={{
                     mouseover: () => handlePinHover(l.vin),
                     mouseout:  () => setHoveredVin((v) => (v === l.vin ? null : v)),
@@ -1020,7 +1130,7 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
                 )}
               </div>
             ) : loading ? (
-              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {/* Skeletons rather than a spinner — the grid keeps its shape,
                     so results don't shove the page around when they land. */}
                 {Array.from({ length: 8 }).map((_, i) => (
@@ -1058,7 +1168,7 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                   {displayed.map((l) => (
                     <ListingCard
                       key={l.vin}

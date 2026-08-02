@@ -31,6 +31,17 @@ export function ThemeProvider({ children }) {
     root.classList.toggle('dark', dark);
     localStorage.setItem('carbot-theme', dark ? 'dark' : 'light');
 
+    // Keep the mobile browser chrome in step with the app's own theme. The
+    // static <meta name="theme-color"> tags in index.html key off
+    // prefers-color-scheme, which is the OS setting — that's the right default
+    // on first paint, but it's wrong the moment a user picks a theme that
+    // differs from their OS. Overwriting the tag here makes the status bar and
+    // address bar follow the app instead.
+    const bg = dark ? '#111110' : '#f5f4ef';
+    document
+      .querySelectorAll('meta[name="theme-color"]')
+      .forEach((tag) => tag.setAttribute('content', bg));
+
     // Only run the smoothing transition when this is a real toggle, not
     // the initial mount.
     if (prevDarkRef.current !== null && prevDarkRef.current !== dark) {

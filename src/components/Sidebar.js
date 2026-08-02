@@ -32,7 +32,10 @@ function readStoredWidth() {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, n));
 }
 
-export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggle, hidden = false }) {
+// `onNavigate` fires whenever the user picks something that changes the main
+// pane. On phones the sidebar is an overlay drawer, so it has to close itself
+// after a selection — on desktop the prop is simply not passed.
+export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggle, hidden = false, onNavigate }) {
   const { user, userDoc } = useAuth();
   const { sessions, activeSessionId, loadSessions, loadSession, deleteSession, startNewChat, activeMode, renameSession } = useChat();
   // Inline rename state — { id, draft } when a session is being renamed,
@@ -163,7 +166,7 @@ export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggl
       {/* New chat */}
       <div className="p-3">
         <button
-          onClick={startNewChat}
+          onClick={() => { startNewChat(); onNavigate?.(); }}
           className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all hover:opacity-80"
           style={{ background: 'var(--color-accent)', color: '#fff', justifyContent: collapsed ? 'center' : 'flex-start' }}
           title="New Assessment"
@@ -211,7 +214,7 @@ export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggl
                 background: activeSessionId === s.id ? 'var(--color-bg)' : 'transparent',
                 color: 'var(--color-text)',
               }}
-              onClick={() => { if (!isEditing) loadSession(s.id); }}
+              onClick={() => { if (!isEditing) { loadSession(s.id); onNavigate?.(); } }}
             >
               <MessageSquare size={14} style={{ color: 'var(--color-muted)', flexShrink: 0 }} />
               {isEditing ? (
@@ -340,7 +343,7 @@ export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggl
 
         {user ? (
           <button
-            onClick={onOpenSettings}
+            onClick={() => { onOpenSettings?.(); onNavigate?.(); }}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition-all hover:opacity-80"
             style={{ color: 'var(--color-text)', justifyContent: collapsed ? 'center' : 'flex-start' }}
             title="Settings"
@@ -356,7 +359,7 @@ export default function Sidebar({ onOpenSettings, onOpenAuth, collapsed, onToggl
           </button>
         ) : (
           <button
-            onClick={onOpenAuth}
+            onClick={() => { onOpenAuth?.(); onNavigate?.(); }}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition-all hover:opacity-80"
             style={{ color: 'var(--color-muted)', justifyContent: collapsed ? 'center' : 'flex-start' }}
             title="Sign in"

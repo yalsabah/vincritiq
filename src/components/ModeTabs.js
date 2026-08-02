@@ -15,24 +15,31 @@ import { useChat } from "../contexts/ChatContext";
 // Labels chosen for clarity over cleverness — the user's brief said titles
 // can be tweaked for UX, and "Buy a Car / Sell a Car / Find Me a Car" reads
 // the same way a friend would offer to help.
+// Each tab carries a short label as well as the full one. On a 430px phone the
+// header also has to hold a menu button and the session-info control, and
+// "Buy a Car / Sell a Car / Find Me a Car" overflows well before that fits —
+// the third tab was being clipped mid-word. Below sm we show the short form.
 const TABS = [
 	{
 		id: "buy",
 		label: "Buy a Car",
+		short: "Buy",
 		icon: ShoppingCart,
 		description: "Analyze a listing — is it a good deal?",
 	},
 	{
 		id: "sell",
 		label: "Sell a Car",
+		short: "Sell",
 		icon: Tag,
 		description: "Find the best price to sell your vehicle",
 	},
 	{
 		id: "find",
 		label: "Find Me a Car",
+		short: "Find",
 		icon: Search,
-		description: "Coming soon — personalized recommendations",
+		description: "Search live dealer inventory",
 		disabled: false,
 	},
 ];
@@ -71,7 +78,7 @@ export default function ModeTabs() {
 						role="tab"
 						aria-selected={active}
 						title={tab.description}
-						className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all disabled:cursor-not-allowed"
+						className="flex-1 flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 rounded-lg text-xs sm:text-sm font-medium transition-all disabled:cursor-not-allowed"
 						style={{
 							background: active ? "var(--color-accent)" : "transparent",
 							color: active
@@ -83,8 +90,9 @@ export default function ModeTabs() {
 							fontWeight: active ? 600 : 500,
 						}}
 					>
-						<Icon size={14} />
-						<span className="whitespace-nowrap">{tab.label}</span>
+						<Icon size={14} className="flex-shrink-0" />
+						<span className="whitespace-nowrap hidden sm:inline">{tab.label}</span>
+						<span className="whitespace-nowrap sm:hidden">{tab.short}</span>
 					</button>
 				);
 			})}

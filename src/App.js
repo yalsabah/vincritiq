@@ -5,7 +5,7 @@ import { verifyCheckoutSession } from './utils/stripeClient';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from './firebase/config';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Menu } from 'lucide-react';
 import { ChatProvider, useChat } from './contexts/ChatContext';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
@@ -17,6 +17,9 @@ import ErrorBoundary from './components/ErrorBoundary';
 
 function AppInner() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Drawer state for the phone layout. Desktop ignores this entirely — the
+  // sidebar is a normal flex column there.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   // Remember the sidebar state from before the report modal opened so we
   // can restore it on close. Auto-collapsing during side-by-side report
   // viewing maximizes the chat ↔ report split; restoring on close avoids
@@ -47,6 +50,14 @@ function AppInner() {
   // the screen. The slide animation runs via the sidebar's existing
   // width transition.
   const findModeActive = activeMode === 'find';
+
+  // Switching modes is navigation, so the phone drawer has to close with it.
+  // Without this, tapping a mode tab while the drawer is open left it sitting
+  // over the new view — and in Find mode, where the sidebar collapses to zero
+  // width, its contents ghosted through on top of the listings.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [activeMode]);
 
   // ChatInterface exposes a triggerCompact function via this ref so the
   // sidebar's "Compact Chat" button can invoke the same code path as typing
@@ -168,14 +179,63 @@ function AppInner() {
   }, [user, refreshUserDoc]);
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--color-bg)' }}>
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed(c => !c)}
-        onOpenSettings={() => setShowSettings(true)}
-        onOpenAuth={() => setShowAuth(true)}
-        hidden={findModeActive}
-      />
+    <div className="flex app-shell overflow-hidden" style={{ background: 'var(--color-bg)' }}>
+      {/* On phones the sidebar becomes an overlay drawer instead of a column:
+          at 320-430px wide there simply isn't room for a persistent sidebar
+          plus a usable chat pane. It's rendered fixed + translated off-canvas,
+          and the backdrop below dismisses it. */}
+      <div
+        className={[
+          'flex-shrink-0',
+          // The explicit width and overflow-hidden are load-bearing, not
+          // cosmetic. `-translate-x-full` shifts by the element's OWN width,
+          // and the sidebar collapses to width 0 in Find mode — so without a
+          // fixed width the "closed" drawer translated by zero and its
+          // children spilled over the listings. Clipping the wrapper keeps
+          // that contained regardless of what the sidebar does internally.
+          'max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:w-[280px] max-md:overflow-hidden',
+          'max-md:transition-transform max-md:duration-200',
+          // Find mode owns the whole canvas on a phone; there's no drawer to
+          // open into, so take it out of the tree entirely.
+          findModeActive ? 'max-md:hidden' : '',
+          mobileNavOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
+        ].join(' ')}
+      >
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(c => !c)}
+          onOpenSettings={() => setShowSettings(true)}
+          onOpenAuth={() => setShowAuth(true)}
+          hidden={findModeActive}
+          onNavigate={() => setMobileNavOpen(false)}
+        />
+      </div>
+
+      {mobileNavOpen && !findModeActive && (
+        <div
+          className="md:hidden fixed inset-0 z-40"
+          style={{ background: 'rgba(0,0,0,0.5)' }}
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Hamburger — only exists on small screens, and not in Find mode where
+          the search surface owns the whole canvas. */}
+      {!findModeActive && !mobileNavOpen && (
+        <button
+          onClick={() => setMobileNavOpen(true)}
+          aria-label="Open menu"
+          className="md:hidden fixed top-2 left-2 z-30 w-9 h-9 rounded-full inline-flex items-center justify-center safe-top"
+          style={{
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            color: 'var(--color-text)',
+          }}
+        >
+          <Menu size={17} />
+        </button>
+      )}
 
       <div className="flex-1 overflow-hidden">
         <ChatInterface
