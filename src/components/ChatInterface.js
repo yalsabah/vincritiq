@@ -281,7 +281,7 @@ function MessageBubble({
 				</div>
 			)}
 
-			<div className={`max-w-2xl ${isUser ? "ml-12" : "mr-12"} flex flex-col`}>
+			<div className={`max-w-2xl ${isUser ? "ml-4 sm:ml-12" : "mr-4 sm:mr-12"} flex flex-col`}>
 				{editing ? (
 					<div
 						className="rounded-2xl overflow-hidden"
@@ -2292,7 +2292,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			    surfaces its own "Back" affordance for returning to chat. */}
 			{activeMode !== 'find' && (
 				<div
-					className="flex-shrink-0 flex items-center justify-center py-3 px-4"
+					className="flex-shrink-0 flex items-center justify-center py-3 px-4 safe-top mode-tabs-row"
 					style={{ borderBottom: "1px solid var(--color-border)" }}
 				>
 					<ModeTabs />
@@ -2511,7 +2511,7 @@ export default function ChatInterface({ onShowUpgrade, onShowAuth, compactTrigge
 			</div>
 
 			{/* Input area */}
-			<div className="px-4 pb-6 pt-2">
+			<div className="px-3 sm:px-4 pb-4 sm:pb-6 pt-2 safe-bottom">
 				<div
 					className="max-w-3xl mx-auto rounded-2xl overflow-hidden"
 					style={{
