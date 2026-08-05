@@ -29,19 +29,18 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import {
-  AlertCircle,
-  ArrowLeft,
-  ExternalLink,
-  FileText,
-  Heart,
-  Loader2,
-  MapPin,
-  RefreshCw,
-  Search,
-  SlidersHorizontal,
-  Sparkles,
-  Wand2,
-  X,
+	AlertCircle,
+	ExternalLink,
+	FileText,
+	Heart,
+	Loader2,
+	MapPin,
+	RefreshCw,
+	Search,
+	SlidersHorizontal,
+	Sparkles,
+	Wand2,
+	X,
 } from "lucide-react";
 import React, {
   useCallback,
@@ -524,7 +523,8 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
 	// was last using.
 	const [provider, setProvider] = useState(() => {
 		try {
-			return window.localStorage.getItem("vincritiq.find.provider") === "motorcycles"
+			return window.localStorage.getItem("vincritiq.find.provider") ===
+				"motorcycles"
 				? "motorcycles"
 				: "cars";
 		} catch {
@@ -541,15 +541,18 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
 	// Reset make/model when switching providers — the Audi S5 (cars) is not the
 	// Kawasaki S5 (bikes), so a stale "S5" in the box would query the wrong
 	// upstream. Everything else (year, price, mileage) is provider-neutral.
-	const switchProvider = useCallback((next) => {
-		if (next === provider) return;
-		setProvider(next);
-		setQ("");
-		// Body style is car-only; clearing it here means switching to bikes and
-		// back to cars doesn't leave a stale filter that would over-narrow the
-		// cars view without any visible chip.
-		setBodyStyle("");
-	}, [provider]);
+	const switchProvider = useCallback(
+		(next) => {
+			if (next === provider) return;
+			setProvider(next);
+			setQ("");
+			// Body style is car-only; clearing it here means switching to bikes and
+			// back to cars doesn't leave a stale filter that would over-narrow the
+			// cars view without any visible chip.
+			setBodyStyle("");
+		},
+		[provider],
+	);
 
 	// ── Data state ────────────────────────────────────────────────────
 	const [rawListings, setRawListings] = useState([]);
@@ -795,12 +798,14 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
 			cancelled = true;
 			controller.abort();
 		};
-	}, [selectedMake]);
+	}, [selectedMake, provider]);
 
 	// The <select> value must equal one of its options exactly; q may hold a
 	// differently-cased token ("s5"), so resolve it against the fetched list.
 	const selectedModel =
-		modelOptions.find((m) => m.toLowerCase() === selectedModelRaw.toLowerCase()) || "";
+		modelOptions.find(
+			(m) => m.toLowerCase() === selectedModelRaw.toLowerCase(),
+		) || "";
 
 	const onMakeChange = useCallback((nextMake) => {
 		// Changing the make resets the model — q becomes just the make (or empty).
@@ -1382,7 +1387,9 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
 										aria-selected={active}
 										className="px-2 py-1.5 rounded-md text-xs font-semibold transition-all"
 										style={{
-											background: active ? "var(--color-accent)" : "transparent",
+											background: active
+												? "var(--color-accent)"
+												: "transparent",
 											color: active ? "#fff" : "var(--color-text)",
 										}}
 									>
@@ -1506,7 +1513,10 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
 								Condition
 							</div>
 							<div className="flex flex-wrap gap-1.5">
-								<FilterPill active={condition === ""} onClick={() => setCondition("")}>
+								<FilterPill
+									active={condition === ""}
+									onClick={() => setCondition("")}
+								>
 									Any
 								</FilterPill>
 								<FilterPill
@@ -1517,7 +1527,9 @@ export default function FindACarPanel({ onAnalyzeListing, onBack }) {
 								</FilterPill>
 								<FilterPill
 									active={condition === "used"}
-									onClick={() => setCondition(condition === "used" ? "" : "used")}
+									onClick={() =>
+										setCondition(condition === "used" ? "" : "used")
+									}
 								>
 									Used
 								</FilterPill>
