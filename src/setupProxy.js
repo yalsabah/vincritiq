@@ -25,6 +25,7 @@ const PUBLIC_BASE_URL       = pickEnv('PUBLIC_BASE_URL') || 'http://localhost:30
 const NVIDIA_TRELLIS_KEY    = pickEnv('NVIDIA_TRELLIS_API_KEY', 'NVIDIA_API_KEY');
 const REPLICATE_API_TOKEN   = pickEnv('REPLICATE_API_TOKEN');
 const AUTODEV_KEY           = pickEnv('AUTODEV_API_KEY', 'AUTODEV_KEY');
+const MARKETCHECK_KEY       = pickEnv('MARKETCHECK_API_KEY', 'MARKETCHECK_KEY');
 
 // Startup banner — confirms which keys actually loaded into this process.
 // Prints first/last 4 chars + length so you can eyeball it without leaking
@@ -45,6 +46,7 @@ console.log('  STRIPE_SECRET  :', fingerprint(STRIPE_SECRET_KEY));
 console.log('  NVIDIA_TRELLIS :', fingerprint(NVIDIA_TRELLIS_KEY));
 console.log('  REPLICATE_TOKEN:', fingerprint(REPLICATE_API_TOKEN));
 console.log('  AUTODEV_KEY    :', fingerprint(AUTODEV_KEY));
+console.log('  MARKETCHECK_KEY:', fingerprint(MARKETCHECK_KEY));
 
 const stripBrowserHeaders = (proxyReq) => {
   proxyReq.removeHeader('origin');
@@ -828,6 +830,134 @@ module.exports = function (app) {
     };
   };
 
+  // Vehicle models for a make (dev) — mirrors functions/api/vehicle-models.js.
+  // Uses Auto.dev facets so model names match the vehicle.model filter exactly.
+  // Motorcycles (dev) — mirrors functions/api/motorcycles.js. Server-side
+  // MarketCheck proxy that returns the normalized Listing shape so the UI
+  // renders bikes with the same components as cars. The full normalization
+  // logic lives in the Pages Function; this dev twin is intentionally lean.
+  const MC_URL = 'https://api.marketcheck.com/v2/search/motorcycle/active';
+  // Price parser — strips currency/commas; must NOT be used for coordinates
+  // since it also strips the minus sign (see the Pages Function's toCoord).
+  const mcToNum = (v) => { if (v == null || v === '') return null; const n = typeof v === 'number' ? v : Number(String(v).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? n : null; };
+  const mcToCoord = (v) => { if (v == null || v === '') return null; const n = typeof v === 'number' ? v : Number(v); return Number.isFinite(n) ? n : null; };
+  const mcSafeUrl = (v) => { if (typeof v !== 'string' || !/^https?:\/\//i.test(v.trim())) return null; try { const u = new URL(v.trim()); return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null; } catch { return null; } };
+  const mcNormalize = (raw) => {
+    const b = raw && raw.build || {};
+    const d = raw && raw.dealer || {};
+    const id = (raw && (raw.vin || raw.id) || '').toString();
+    if (!id) return null;
+    const photos = Array.isArray(raw && raw.media && raw.media.photo_links) ? raw.media.photo_links.filter(u => typeof u === 'string' && /^https?:\/\//i.test(u)).slice(0, 8) : [];
+    return {
+      vin: id.toUpperCase(),
+      year: mcToNum(b.year), make: b.make || null, model: b.model || null, trim: b.trim || null,
+      price: mcToNum(raw.price), mileage: mcToNum(raw.miles),
+      exteriorColor: raw.color || null,
+      condition: raw.inventory_type === 'new' ? 'new' : 'used',
+      cpo: Boolean(raw.cpo || raw.certified),
+      photos, primaryImage: photos[0] || null, photoCount: photos.length,
+      dealer: { name: d.name || 'Dealer', source: 'dealer', city: d.city || null, state: d.state || null, lat: mcToCoord(d.latitude), lng: mcToCoord(d.longitude) },
+      listingUrl: mcSafeUrl(raw.vdp_url), carfaxUrl: null, provider: 'marketcheck',
+    };
+  };
+  const MC_PAGE_SIZE = 20;
+  app.get('/api/motorcycles', async (req, res) => {
+    if (!MARKETCHECK_KEY) return res.status(503).json({
+      error: 'motorcycles_not_configured',
+      message: 'Motorcycle listings need a MarketCheck API key. Add MARKETCHECK_API_KEY to .env and restart npm start.',
+    });
+    // Facet endpoint for the Model dropdown (mirrors the Pages Function).
+    if (req.query.modelsForMake) {
+      try {
+        const q = new URLSearchParams({ api_key: MARKETCHECK_KEY, rows: '0', facets: 'model', make: String(req.query.modelsForMake) });
+        const r = await fetch(`${MC_URL}?${q}`);
+        if (!r.ok) return res.status(502).json({ models: [] });
+        const body = await r.json().catch(() => null);
+        const facet = (body && body.facets && body.facets.model) || [];
+        const models = facet.map(m => (m && m.item || '').trim()).filter(Boolean).slice(0, 60);
+        return res.json({ make: String(req.query.modelsForMake), models });
+      } catch (e) { return res.status(502).json({ models: [], error: String(e && e.message) }); }
+    }
+
+    const q = new URLSearchParams();
+    q.set('api_key', MARKETCHECK_KEY); q.set('rows', String(MC_PAGE_SIZE));
+    const page = Math.max(1, Number(req.query.page) || 1);
+    q.set('start', String((page - 1) * MC_PAGE_SIZE));
+    if (req.query.make) q.set('make', String(req.query.make));
+    if (req.query.model) q.set('model', String(req.query.model));
+    if (req.query.trim) q.set('trim', String(req.query.trim));
+    if (req.query.condition === 'new' || req.query.condition === 'used') q.set('inventory_type', String(req.query.condition));
+    const yMin = Number(req.query.yearMin), yMax = Number(req.query.yearMax);
+    if (Number.isFinite(yMin) && Number.isFinite(yMax) && yMin > 1900) q.set('year', `${yMin}-${yMax}`);
+    const pMin = Number(req.query.priceMin), pMax = Number(req.query.priceMax);
+    const sortRaw = String(req.query.sort || '');
+    if (Number.isFinite(pMax) && pMax > 0) {
+      const lo = Number.isFinite(pMin) && pMin > 0 ? Math.round(pMin) : 100;
+      q.set('price_range', `${lo}-${Math.round(pMax)}`);
+    } else if (sortRaw === 'price.asc') {
+      // Floor cheapest-first sorts so null-price rows don't top the results.
+      q.set('price_range', '100-99999999');
+    }
+    const miMin = Number(req.query.milesMin), miMax = Number(req.query.milesMax);
+    if (Number.isFinite(miMax) && miMax > 0) q.set('miles_range', `${Number.isFinite(miMin) && miMin > 0 ? Math.round(miMin) : 0}-${Math.round(miMax)}`);
+    if (req.query.zip && /^\d{5}$/.test(String(req.query.zip))) {
+      q.set('zip', String(req.query.zip));
+      const dist = Number(req.query.distance);
+      if (Number.isFinite(dist) && dist > 0) q.set('radius', String(dist));
+    }
+    const sort = String(req.query.sort || '');
+    if (sort === 'price.asc') { q.set('sort_by', 'price'); q.set('sort_order', 'asc'); }
+    else if (sort === 'price.desc') { q.set('sort_by', 'price'); q.set('sort_order', 'desc'); }
+    else if (sort === 'miles.asc') { q.set('sort_by', 'miles'); q.set('sort_order', 'asc'); }
+    else if (sort === 'year.desc') { q.set('sort_by', 'year'); q.set('sort_order', 'desc'); }
+    else { q.set('sort_by', 'last_seen_at'); q.set('sort_order', 'desc'); }
+
+    try {
+      const r = await fetch(`${MC_URL}?${q}`);
+      if (!r.ok) {
+        const detail = await r.text().catch(() => '');
+        const message = r.status === 401 || r.status === 403
+          ? 'MarketCheck rejected the API key. Check MARKETCHECK_API_KEY and whether the free quota is used up.'
+          : `MarketCheck returned ${r.status}. ${detail.slice(0, 200)}`;
+        return res.status(502).json({ error: 'upstream_error', status: r.status, message });
+      }
+      const body = await r.json().catch(() => null);
+      const rows = Array.isArray(body && body.listings) ? body.listings : [];
+      const listings = rows.map(mcNormalize).filter(Boolean);
+      const total = Number(body && body.num_found);
+      res.json({
+        listings, origin: null, page, pageSize: MC_PAGE_SIZE,
+        total: Number.isFinite(total) ? total : null,
+        hasMore: listings.length === MC_PAGE_SIZE,
+        provider: 'marketcheck',
+      });
+    } catch (err) {
+      res.status(502).json({ error: 'upstream_unreachable', message: String(err && err.message) });
+    }
+  });
+
+  app.get('/api/vehicle-models', async (req, res) => {
+    if (!AUTODEV_KEY) return res.status(503).json({ error: 'listings_not_configured', models: [] });
+    const make = String(req.query.make || '').trim();
+    if (!make) return res.json({ models: [] });
+    try {
+      const r = await fetch(
+        `${AUTODEV_URL}?limit=1&includes=facets&vehicle.make=${encodeURIComponent(make)}`,
+        { headers: { Authorization: `Bearer ${AUTODEV_KEY}`, 'Content-Type': 'application/json' } },
+      );
+      if (!r.ok) return res.status(502).json({ error: `upstream_${r.status}`, models: [] });
+      const body = await r.json().catch(() => null);
+      const facet = (body && body.facets && body.facets.models) || {};
+      const models = Object.keys(facet)
+        .map((k) => k.replace(/\s*\(\d[\d,]*\)\s*$/, '').trim())
+        .filter(Boolean)
+        .slice(0, 60);
+      res.json({ make, models });
+    } catch (err) {
+      res.status(502).json({ error: String(err && err.message), models: [] });
+    }
+  });
+
   app.get('/api/listings', async (req, res) => {
     if (!AUTODEV_KEY) {
       return res.status(503).json({
@@ -886,10 +1016,16 @@ module.exports = function (app) {
       if (SORTABLE.has(field) && (dir === 'asc' || dir === 'desc')) p.set('sort', String(req.query.sort));
     }
     if (req.query.cpo === 'true') p.set('retailListing.cpo', 'true');
+    if (req.query.condition === 'new') p.set('retailListing.used', 'false');
+    else if (req.query.condition === 'used') p.set('retailListing.used', 'true');
     const BODY_STYLES = new Set(['Car', 'SUV', 'Truck', 'Van']);
     if (req.query.bodyStyle && BODY_STYLES.has(String(req.query.bodyStyle))) {
       p.set('vehicle.bodyStyle', String(req.query.bodyStyle));
     }
+    if (req.query.state && /^[A-Za-z]{2}$/.test(String(req.query.state))) {
+      p.set('retailListing.state', String(req.query.state).toUpperCase());
+    }
+    if (req.query.color) p.set('vehicle.exteriorColor', String(req.query.color).slice(0, 32));
 
     const yearMin = Number(req.query.yearMin);
     const yearMax = Number(req.query.yearMax);
@@ -901,6 +1037,11 @@ module.exports = function (app) {
     const priceMin = Number(req.query.priceMin);
     if (Number.isFinite(priceMax) && priceMax > 0) {
       p.set('retailListing.price', `${Number.isFinite(priceMin) && priceMin > 0 ? Math.round(priceMin) : 0}-${Math.round(priceMax)}`);
+    }
+    const milesMax = Number(req.query.milesMax);
+    const milesMin = Number(req.query.milesMin);
+    if (Number.isFinite(milesMax) && milesMax > 0) {
+      p.set('retailListing.miles', `${Number.isFinite(milesMin) && milesMin > 0 ? Math.round(milesMin) : 0}-${Math.round(milesMax)}`);
     }
 
     try {

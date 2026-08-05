@@ -93,6 +93,33 @@ export async function fetchListingPhotoAsFile(url, filename = 'listing-photo.jpg
   }
 }
 
+/**
+ * Fetch the model names Auto.dev actually has for a make, via its facets
+ * (exact-match to the `vehicle.model` filter, unlike a generic VIN dataset).
+ * Returns the top models by inventory volume, newest-selling first. Empty array
+ * on any failure — the dropdown just falls back to "Any model".
+ */
+export async function fetchModelsForMake(make, signal, provider = 'cars') {
+  const m = String(make || '').trim();
+  if (!m) return [];
+  // Cars → the dedicated /api/vehicle-models (Auto.dev facets). Motorcycles →
+  // the same MarketCheck proxy that answers listings, via the ?modelsForMake
+  // query parameter. Both return { models: string[] }.
+  const url =
+    provider === 'motorcycles'
+      ? `/api/motorcycles?modelsForMake=${encodeURIComponent(m)}`
+      : `/api/vehicle-models?make=${encodeURIComponent(m)}`;
+  try {
+    const res = await fetch(url, { signal });
+    if (!res.ok) return [];
+    const body = await res.json().catch(() => null);
+    return Array.isArray(body?.models) ? body.models : [];
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err;
+    return [];
+  }
+}
+
 // Error surfaced to the panel. `code` lets the UI distinguish "you haven't
 // set this up yet" (actionable setup instructions) from "the feed broke"
 // (retry), which read very differently to a user.
@@ -122,6 +149,43 @@ const MAKES = new Set([
   'smart', 'subaru', 'suzuki', 'tesla', 'toyota', 'volkswagen', 'volvo',
 ]);
 
+// Display-cased makes for the sidebar dropdown, matching Auto.dev's own casing
+// (e.g. "BMW", "Mercedes-Benz"). Derived from the same set the query parser
+// uses, so anything selectable here is a make the API actually recognizes.
+export const MAKES_DISPLAY = [
+  'Acura', 'Alfa Romeo', 'Aston Martin', 'Audi', 'Bentley', 'BMW', 'Buick',
+  'Cadillac', 'Chevrolet', 'Chrysler', 'Dodge', 'Ferrari', 'Fiat', 'Ford',
+  'Genesis', 'GMC', 'Honda', 'Hummer', 'Hyundai', 'Infiniti', 'Jaguar', 'Jeep',
+  'Kia', 'Lamborghini', 'Land Rover', 'Lexus', 'Lincoln', 'Lotus', 'Lucid',
+  'Maserati', 'Mazda', 'McLaren', 'Mercedes-Benz', 'Mercury', 'Mini',
+  'Mitsubishi', 'Nissan', 'Oldsmobile', 'Plymouth', 'Polestar', 'Pontiac',
+  'Porsche', 'Ram', 'Rivian', 'Rolls-Royce', 'Saab', 'Saturn', 'Scion',
+  'Smart', 'Subaru', 'Suzuki', 'Tesla', 'Toyota', 'Volkswagen', 'Volvo',
+];
+
+// Motorcycle makes for the sidebar dropdown when the panel is in bike mode.
+// Ordered by MarketCheck facet volume (Kawasaki has the most listings), so the
+// most-likely picks are at the top of the list. Not all of these will have big
+// inventory — the Model dropdown loads per-make from the facet endpoint, so a
+// low-count make just shows fewer models.
+export const MOTORCYCLE_MAKES_DISPLAY = [
+  'Kawasaki', 'Honda', 'Harley-Davidson', 'Yamaha', 'Polaris', 'Can-Am', 'Suzuki',
+  'Ducati', 'BMW', 'Triumph', 'KTM', 'Indian', 'Aprilia', 'Vespa', 'Royal Enfield',
+  'Husqvarna', 'Piaggio', 'MV Agusta', 'Zero', 'Beta', 'GasGas',
+];
+
+// Same lookup for bikes, built from the dropdown list so it can't drift.
+const MOTORCYCLE_MAKES = new Set(MOTORCYCLE_MAKES_DISPLAY.map((m) => m.toLowerCase()));
+
+// canonical/lowercase make ("audi", "mercedes-benz") → the display form the
+// dropdown uses, or '' if it isn't a known make. Lets the dropdown stay in sync
+// with whatever is in the search box (typed or set by the agent).
+export function makeDisplayName(rawMake, provider) {
+  const c = String(rawMake || '').toLowerCase().trim();
+  const list = provider === 'motorcycles' ? MOTORCYCLE_MAKES_DISPLAY : MAKES_DISPLAY;
+  return list.find((m) => m.toLowerCase() === c) || '';
+}
+
 // What people actually type vs. what the API expects.
 const MAKE_ALIASES = {
   chevy: 'chevrolet', vw: 'volkswagen', mercedes: 'mercedes-benz',
@@ -130,8 +194,22 @@ const MAKE_ALIASES = {
   'rolls royce': 'rolls-royce', 'alfa': 'alfa romeo', vette: 'chevrolet',
 };
 
-const canonicalMake = (s) => {
+const MOTORCYCLE_MAKE_ALIASES = {
+  'harley': 'harley-davidson', 'harley davidson': 'harley-davidson',
+  'h-d': 'harley-davidson', 'hd': 'harley-davidson',
+  'royal-enfield': 'royal enfield', 'mv-agusta': 'mv agusta',
+};
+
+// Provider-aware: a query typed in Motorcycles mode should recognize bike
+// makes ("yamaha", "kawasaki") instead of checking the car-only list, which
+// misclassified them as models and sent nonsense upstream (e.g.
+// vehicle.model=yamaha* against MarketCheck, which never matches).
+const canonicalMake = (s, provider) => {
   const k = String(s || '').toLowerCase().trim();
+  if (provider === 'motorcycles') {
+    const aliased = MOTORCYCLE_MAKE_ALIASES[k] || k;
+    return MOTORCYCLE_MAKES.has(aliased) ? aliased : null;
+  }
   const aliased = MAKE_ALIASES[k] || k;
   return MAKES.has(aliased) ? aliased : null;
 };
@@ -162,7 +240,7 @@ const YEAR_RANGE_RE = /^(19\d{2}|20\d{2})\s*[-–]\s*(19\d{2}|20\d{2})$/;
 
 const plausibleYear = (n) => Number.isFinite(n) && n >= EARLIEST_YEAR && n <= LATEST_YEAR;
 
-export function parseQuery(raw) {
+export function parseQuery(raw, provider) {
   const q = String(raw || '').trim();
   const empty = { make: '', model: '', trimTokens: [], vin: '', yearMin: null, yearMax: null };
   if (!q) return empty;
@@ -198,8 +276,8 @@ export function parseQuery(raw) {
   });
 
   // Longest-match-first so two-word makes beat their first token.
-  const twoWord = parts.length >= 2 ? canonicalMake(`${parts[0]} ${parts[1]}`) : null;
-  const oneWord = canonicalMake(parts[0]);
+  const twoWord = parts.length >= 2 ? canonicalMake(`${parts[0]} ${parts[1]}`, provider) : null;
+  const oneWord = canonicalMake(parts[0], provider);
 
   let make = '';
   let rest = parts;
@@ -234,14 +312,22 @@ export function parseQuery(raw) {
  * @returns {Promise<{ listings: Array, origin: object|null, page: number, total: number|null, hasMore: boolean }>}
  */
 export async function fetchListings(filters = {}) {
-  const { make, model, trimTokens, vin, yearMin: qYearMin, yearMax: qYearMax } = parseQuery(filters.q);
+  const { make, model, trimTokens, vin, yearMin: qYearMin, yearMax: qYearMax } = parseQuery(filters.q, filters.provider);
+
+  // Provider routing: 'motorcycles' hits MarketCheck (bikes), anything else
+  // (default) hits Auto.dev (cars). The endpoints share the same normalized
+  // Listing shape so the UI doesn't need to branch on which one answered.
+  const isMoto = filters.provider === 'motorcycles';
+  const endpoint = isMoto ? '/api/motorcycles' : '/api/listings';
 
   const base = new URLSearchParams();
-  if (vin) {
+  if (vin && !isMoto) {
     // A VIN search is exact — every other filter is noise, so send it alone
-    // and let the server hit Auto.dev's single-listing endpoint.
+    // and let the server hit Auto.dev's single-listing endpoint. Motorcycles
+    // don't have a VIN-lookup endpoint on MarketCheck, so fall through and use
+    // it as a normal query token instead.
     base.set('vin', vin);
-    return requestListings(base, filters.signal);
+    return requestListings(base, filters.signal, endpoint);
   }
   if (make) base.set('make', make);
 
@@ -286,14 +372,26 @@ export async function fetchListings(filters = {}) {
     base.set('yearMax', String(yearMax));
   }
 
+  // Mileage — sent server-side when there's an actual ceiling (an at-max
+  // slider means "any", so it's omitted and costs no filtering).
+  const [mileMin, mileMax] = filters.mileageRange || [];
+  if (Number.isFinite(mileMax) && mileMax > 0 && mileMax < MILEAGE_CEILING) {
+    base.set('milesMin', String(mileMin || 0));
+    base.set('milesMax', String(mileMax));
+  }
+
   if (filters.sort) base.set('sort', filters.sort);
   if (filters.cpoOnly) base.set('cpo', 'true');
+  if (filters.condition === 'new' || filters.condition === 'used') base.set('condition', filters.condition);
   if (filters.bodyStyle) base.set('bodyStyle', filters.bodyStyle);
+  // State + color: used mainly by the vehicle-finder agent (NL → filters).
+  if (filters.state) base.set('state', filters.state);
+  if (filters.color) base.set('color', filters.color);
 
   base.set('page', String(filters.page || 1));
 
   if (!model) {
-    return requestListings(base, filters.signal);
+    return requestListings(base, filters.signal, endpoint);
   }
 
   // Primary attempt: the typed token(s) as a model. The server prefix-matches
@@ -301,7 +399,7 @@ export async function fetchListings(filters = {}) {
   // "Camry" without the user finishing the word.
   const modelAttempt = new URLSearchParams(base);
   modelAttempt.set('model', model);
-  const result = await requestListings(modelAttempt, filters.signal);
+  const result = await requestListings(modelAttempt, filters.signal, endpoint);
   if (result.listings.length > 0) return result;
 
   // Fallback: the token may not be a model at all. A BMW "M340i" is
@@ -314,20 +412,42 @@ export async function fetchListings(filters = {}) {
   const trimAttempt = new URLSearchParams(base);
   trimAttempt.set('trim', trimCandidate);
   try {
-    const trimResult = await requestListings(trimAttempt, filters.signal);
+    const trimResult = await requestListings(trimAttempt, filters.signal, endpoint);
     if (trimResult.listings.length > 0) return trimResult;
   } catch (err) {
     if (err?.name === 'AbortError') throw err;
     // The primary attempt already succeeded (if emptily) — a failure on this
     // speculative retry shouldn't override a valid empty result with an error.
   }
+
+  // Motorcycle-only fallback: MarketCheck splits a mashed model+trim token at
+  // the letter/digit boundary — "CRF300L" is model="Crf" + trim="300l Abs" —
+  // so neither the model-only nor whole-token-as-trim attempts above match
+  // (verified live: both return 0; model="Crf" + trim="300l" returns 250).
+  // Cars don't need this: Auto.dev's trim fallback already matches on the
+  // full remainder ("M340i"), so this only runs for bikes.
+  if (isMoto) {
+    const split = model.match(/^([a-zA-Z]+)([0-9].*)$/);
+    if (split) {
+      const splitAttempt = new URLSearchParams(base);
+      splitAttempt.set('model', split[1]);
+      splitAttempt.set('trim', [split[2], ...trimTokens].join(' ').trim());
+      try {
+        const splitResult = await requestListings(splitAttempt, filters.signal, endpoint);
+        if (splitResult.listings.length > 0) return splitResult;
+      } catch (err) {
+        if (err?.name === 'AbortError') throw err;
+      }
+    }
+  }
+
   return result;
 }
 
-async function requestListings(params, signal) {
+async function requestListings(params, signal, endpoint = '/api/listings') {
   let res;
   try {
-    res = await fetch(`/api/listings?${params.toString()}`, { signal });
+    res = await fetch(`${endpoint}?${params.toString()}`, { signal });
   } catch (err) {
     // AbortError means a newer search superseded this one — let the caller
     // recognize it and stay silent rather than flashing an error.

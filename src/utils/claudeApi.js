@@ -147,6 +147,8 @@ The "metrics" array MUST contain exactly 4 entries — typically: Best Channel (
 
 Always include the full JSON in <REPORT>...</REPORT> tags. Write natural-language analysis before the JSON.
 
+Length — important: keep the natural-language analysis BEFORE the <REPORT> block SHORT — at most 2-4 plain sentences that name the recommended channel, the expected price, and the single main reason. Do NOT restate the per-channel price table, the improvements list, or the dealer breakdown in prose — the report card renders all of that. No headings or bullet lists in the prose.
+
 Be honest. If the vehicle is hard to sell (salvage title, very high mileage, unloved trim), say so plainly and recommend the instant-offer or trade-in route rather than overselling private party.`;
 
 const SYSTEM_PROMPT = (userMemory = '') => `You are VinCritiq, an expert AI vehicle deal analyst. You help users evaluate car deals by analyzing CARFAX reports, vehicle images, pricing data, and financing terms.
@@ -209,6 +211,11 @@ Image handling — important:
 - If you see images that clearly are not vehicles or are of an unrelated subject (random photos, screenshots of unrelated UI, etc.), ignore them for analysis and call it out briefly in the verdict summary.
 - If images appear to show DIFFERENT vehicles than the CARFAX (e.g. CARFAX is a Mercedes but an image is an Audi), surface this conflict at the top of your response and ask which vehicle to analyze rather than guessing.
 - Do NOT include any "Used images: …" / "Images reviewed: …" / image-tally lines in your response. The UI already shows the user which photos were attached.
+
+Length — important (this is the #1 thing to get right):
+- The natural-language analysis BEFORE the <REPORT> block must be SHORT and straight to the point: at most 2-4 sentences. State the verdict and the single most important reason for it, plus at most one caveat. That is the whole message.
+- Do NOT restate the metrics, the pricing table, the financing terms, or the depreciation numbers in prose. The report card below renders all of that. Prose that re-narrates the card is exactly the "information overload" to avoid.
+- No section headings, no bullet lists, no bold-label lists in the prose — just a few plain sentences a friend would text you.
 
 Formatting — important:
 - Use single blank lines between paragraphs. Never emit two or more consecutive blank lines.

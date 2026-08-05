@@ -26,29 +26,56 @@
 // and the filters that don't need a round-trip (mileage, source badge,
 // trim) refine the fetched page client-side instead.
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import {
-  Search, Heart, Sparkles, ExternalLink, ArrowLeft, MapPin,
-  Loader2, AlertCircle, RefreshCw, SlidersHorizontal, X, FileText,
-} from 'lucide-react';
-import { useTheme } from '../contexts/ThemeContext';
+  AlertCircle,
+  ArrowLeft,
+  ExternalLink,
+  FileText,
+  Heart,
+  Loader2,
+  MapPin,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+  Sparkles,
+  Wand2,
+  X,
+} from "lucide-react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { MapContainer, Marker, TileLayer, useMap } from "react-leaflet";
+import { useChat } from "../contexts/ChatContext";
+import { useTheme } from "../contexts/ThemeContext";
 import {
   DISTANCE_OPTIONS,
-  SOURCE_LABELS,
-  PRICE_CEILING,
-  MILEAGE_CEILING,
   EARLIEST_YEAR,
   LATEST_YEAR,
+  MAKES_DISPLAY,
+  MILEAGE_CEILING,
+  MOTORCYCLE_MAKES_DISPLAY,
+  PRICE_CEILING,
+  SOURCE_LABELS,
   fetchListings,
+  fetchModelsForMake,
+  makeDisplayName,
+  parseQuery,
   refineListings,
-} from '../utils/listings';
+} from "../utils/listings";
+import FindAgentModal from "./FindAgentModal";
+import { TABS } from "./ModeTabs";
+
+const AGENT_PILL_KEY = "vincritiq.find.agentPillHidden";
 
 // Suppress Leaflet's default-marker requests (we use DivIcons exclusively).
 delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({ iconRetinaUrl: '', iconUrl: '', shadowUrl: '' });
+L.Icon.Default.mergeOptions({ iconRetinaUrl: "", iconUrl: "", shadowUrl: "" });
 
 const US_CENTER = [39.5, -98.35];
 
@@ -65,7 +92,7 @@ const MAP_DEFAULT_FRAC = 0.4;
 
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
-const FAVORITES_KEY = 'vincritiq.find.favorites';
+const FAVORITES_KEY = "vincritiq.find.favorites";
 
 // "Load more" aims to add at least this many refined listings per click, and
 // will fetch up to this many upstream pages to reach it before giving up.
@@ -80,29 +107,29 @@ const LOAD_MORE_MAX_PAGES = 4;
 // basemap, and a slate-900 backdrop flashes dark behind a light map on every
 // pan.
 const MAP_THEME = {
-  dark: {
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    background: '#0f172a',
-    pinRing: '#ffffff',
-    pinShadow: 'rgba(0,0,0,0.4)',
-  },
-  light: {
-    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    background: '#e8e6e1',
-    pinRing: '#1a1a18',
-    pinShadow: 'rgba(0,0,0,0.25)',
-  },
+	dark: {
+		url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+		background: "#0f172a",
+		pinRing: "#ffffff",
+		pinShadow: "rgba(0,0,0,0.4)",
+	},
+	light: {
+		url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+		background: "#e8e6e1",
+		pinRing: "#1a1a18",
+		pinShadow: "rgba(0,0,0,0.25)",
+	},
 };
 
 // Sort options map onto Auto.dev's `sort` param (field.direction). Only the
 // fields the API documents as sortable are offered — an unsupported field is
 // rejected upstream rather than silently ignored.
 const SORT_OPTIONS = [
-  { id: 'updatedAt.desc', label: 'Freshest listings' },
-  { id: 'price.asc', label: 'Price: low to high' },
-  { id: 'price.desc', label: 'Price: high to low' },
-  { id: 'miles.asc', label: 'Mileage: lowest first' },
-  { id: 'year.desc', label: 'Year: newest first' },
+	{ id: "updatedAt.desc", label: "Freshest listings" },
+	{ id: "price.asc", label: "Price: low to high" },
+	{ id: "price.desc", label: "Price: high to low" },
+	{ id: "miles.asc", label: "Mileage: lowest first" },
+	{ id: "year.desc", label: "Year: newest first" },
 ];
 
 // Body styles that actually have inventory behind them. `vehicle.bodyStyle`
@@ -110,28 +137,31 @@ const SORT_OPTIONS = [
 // essentially the whole catalogue (SUV 2.4M, Truck 950k, Van 63k, plus Car).
 // Coupe and Convertible are valid values but return ~2k rows each out of 4.4M,
 // which reads as a broken filter rather than a niche one.
-const BODY_STYLES = ['Car', 'SUV', 'Truck', 'Van'];
+const BODY_STYLES = ["Car", "SUV", "Truck", "Van"];
 
 // Newest year first — most shoppers filter down from recent, not up from 1990.
 const YEAR_CHOICES = Array.from(
-  { length: LATEST_YEAR - EARLIEST_YEAR + 1 },
-  (_, i) => LATEST_YEAR - i,
+	{ length: LATEST_YEAR - EARLIEST_YEAR + 1 },
+	(_, i) => LATEST_YEAR - i,
 );
-
 
 // Plain dot pin for normal state, large price-tagged pill for the
 // currently-hovered listing. The hovered state has to look noticeably
 // different (size + price label) so the user's eye can follow the
 // hover → pin connection at a glance.
-function listingPin({ hovered, price, source, theme = 'dark' }) {
-  const color = SOURCE_LABELS[source]?.color || '#2563eb';
-  const { pinRing, pinShadow } = MAP_THEME[theme];
-  if (hovered) {
-    const dollars =
-      price == null ? '—' : price >= 1000 ? `$${Math.round(price / 1000)}K` : `$${price}`;
-    return L.divIcon({
-      className: 'find-pin find-pin-hovered',
-      html: `<div style="
+function listingPin({ hovered, price, source, theme = "dark" }) {
+	const color = SOURCE_LABELS[source]?.color || "#2563eb";
+	const { pinRing, pinShadow } = MAP_THEME[theme];
+	if (hovered) {
+		const dollars =
+			price == null
+				? "—"
+				: price >= 1000
+					? `$${Math.round(price / 1000)}K`
+					: `$${price}`;
+		return L.divIcon({
+			className: "find-pin find-pin-hovered",
+			html: `<div style="
         background:${color};
         color:#fff;
         font-size:11px;
@@ -143,13 +173,13 @@ function listingPin({ hovered, price, source, theme = 'dark' }) {
         white-space:nowrap;
         transform:translateY(-2px);
       ">${dollars}</div>`,
-      iconSize: [60, 24],
-      iconAnchor: [30, 24],
-    });
-  }
-  return L.divIcon({
-    className: 'find-pin',
-    html: `<div style="
+			iconSize: [60, 24],
+			iconAnchor: [30, 24],
+		});
+	}
+	return L.divIcon({
+		className: "find-pin",
+		html: `<div style="
       width:12px;
       height:12px;
       border-radius:50%;
@@ -157,42 +187,44 @@ function listingPin({ hovered, price, source, theme = 'dark' }) {
       border:2px solid ${pinRing};
       box-shadow:0 0 0 1px ${pinShadow};
     "></div>`,
-    iconSize: [16, 16],
-    iconAnchor: [8, 8],
-  });
+		iconSize: [16, 16],
+		iconAnchor: [8, 8],
+	});
 }
 
 function formatMiles(n) {
-  if (!Number.isFinite(n)) return 'Mileage n/a';
-  return `${n.toLocaleString()} mi`;
+	if (!Number.isFinite(n)) return "Mileage n/a";
+	return `${n.toLocaleString()} mi`;
 }
 
 function formatPrice(n) {
-  if (!Number.isFinite(n)) return 'Call for price';
-  return `$${n.toLocaleString()}`;
+	if (!Number.isFinite(n)) return "Call for price";
+	return `$${n.toLocaleString()}`;
 }
 
 // Recenters the map when a new search resolves. MapContainer only reads
 // `center` on mount, so without this the view stays wherever the previous
 // search left it and a ZIP change looks like it did nothing.
 function MapFocus({ listings, origin }) {
-  const map = useMap();
-  useEffect(() => {
-    const points = listings
-      .filter((l) => Number.isFinite(l.dealer?.lat) && Number.isFinite(l.dealer?.lng))
-      .map((l) => [l.dealer.lat, l.dealer.lng]);
+	const map = useMap();
+	useEffect(() => {
+		const points = listings
+			.filter(
+				(l) => Number.isFinite(l.dealer?.lat) && Number.isFinite(l.dealer?.lng),
+			)
+			.map((l) => [l.dealer.lat, l.dealer.lng]);
 
-    if (points.length > 1) {
-      map.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 11 });
-    } else if (points.length === 1) {
-      map.setView(points[0], 10);
-    } else if (origin?.lat != null) {
-      map.setView([origin.lat, origin.lng], 9);
-    } else {
-      map.setView(US_CENTER, 4);
-    }
-  }, [listings, origin, map]);
-  return null;
+		if (points.length > 1) {
+			map.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 11 });
+		} else if (points.length === 1) {
+			map.setView(points[0], 10);
+		} else if (origin?.lat != null) {
+			map.setView([origin.lat, origin.lng], 9);
+		} else {
+			map.setView(US_CENTER, 4);
+		}
+	}, [listings, origin, map]);
+	return null;
 }
 
 // Leaflet caches its container dimensions and only recomputes them on a window
@@ -201,1090 +233,1837 @@ function MapFocus({ listings, origin }) {
 // wrong coordinates. invalidateSize() after the CSS transition settles is what
 // keeps the tiles honest.
 function MapResizer({ trigger }) {
-  const map = useMap();
-  useEffect(() => {
-    // Scheduling on rAF and cancelling on cleanup naturally throttles this to
-    // at most one invalidateSize per frame, however many wheel ticks arrive.
-    const raf = requestAnimationFrame(() => map.invalidateSize({ animate: false, pan: false }));
-    return () => cancelAnimationFrame(raf);
-  }, [trigger, map]);
-  return null;
+	const map = useMap();
+	useEffect(() => {
+		// Scheduling on rAF and cancelling on cleanup naturally throttles this to
+		// at most one invalidateSize per frame, however many wheel ticks arrive.
+		const raf = requestAnimationFrame(() =>
+			map.invalidateSize({ animate: false, pan: false }),
+		);
+		return () => cancelAnimationFrame(raf);
+	}, [trigger, map]);
+	return null;
 }
 
 // Tiny chip used in the filter sidebar (distance radius, source kind).
 function FilterPill({ active, onClick, children, disabled, title }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className="px-2.5 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap"
-      style={{
-        background: active ? 'var(--color-accent)' : 'var(--color-bg)',
-        color: active ? '#fff' : 'var(--color-text)',
-        border: active ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
-        opacity: disabled ? 0.4 : 1,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-      }}
-    >
-      {children}
-    </button>
-  );
+	return (
+		<button
+			onClick={onClick}
+			disabled={disabled}
+			title={title}
+			className="px-2.5 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap"
+			style={{
+				background: active ? "var(--color-accent)" : "var(--color-bg)",
+				color: active ? "#fff" : "var(--color-text)",
+				border: active
+					? "1px solid var(--color-accent)"
+					: "1px solid var(--color-border)",
+				opacity: disabled ? 0.4 : 1,
+				cursor: disabled ? "not-allowed" : "pointer",
+			}}
+		>
+			{children}
+		</button>
+	);
 }
 
 // Single listing card. Wrapped in its own component so the
 // hover/leave handlers don't force the entire grid to re-render
 // whenever the cursor moves.
-function ListingCard({ listing, hovered, favorited, onHover, onLeave, onAnalyze, onFavorite, onPhotoResolved, cardRefSetter }) {
-  const sourceMeta =
-    SOURCE_LABELS[listing.dealer?.source] || { label: listing.dealer?.name || 'Listing', color: '#64748b' };
-  const photo = Array.isArray(listing.photos) ? listing.photos[0] : null;
-  // Three states, not two. The old boolean showed the "Photo unavailable"
-  // placeholder during loading as well as after a failure, so a photo that was
-  // merely slow looked identical to one that was missing. Now the card spins
-  // until the image resolves and only calls it unavailable once it actually
-  // errors.
-  const [photoState, setPhotoState] = useState(photo ? 'loading' : 'missing');
+function ListingCard({
+	listing,
+	hovered,
+	favorited,
+	onHover,
+	onLeave,
+	onAnalyze,
+	onFavorite,
+	onPhotoResolved,
+	cardRefSetter,
+}) {
+	const sourceMeta = SOURCE_LABELS[listing.dealer?.source] || {
+		label: listing.dealer?.name || "Listing",
+		color: "#64748b",
+	};
+	const photo = Array.isArray(listing.photos) ? listing.photos[0] : null;
+	// Three states, not two. The old boolean showed the "Photo unavailable"
+	// placeholder during loading as well as after a failure, so a photo that was
+	// merely slow looked identical to one that was missing. Now the card spins
+	// until the image resolves and only calls it unavailable once it actually
+	// errors.
+	const [photoState, setPhotoState] = useState(photo ? "loading" : "missing");
 
-  // Report the outcome upward so the panel can sink photo-less listings to the
-  // bottom. The feed's image URLs are VIN-derived guesses and many 404, and
-  // there's no way to know which without asking the browser to try — the host
-  // doesn't answer HEAD requests.
-  useEffect(() => {
-    if (photoState === 'loading') return;
-    onPhotoResolved?.(listing.vin, photoState !== 'failed' && photoState !== 'missing');
-  }, [photoState, listing.vin, onPhotoResolved]);
+	// Report the outcome upward so the panel can sink photo-less listings to the
+	// bottom. The feed's image URLs are VIN-derived guesses and many 404, and
+	// there's no way to know which without asking the browser to try — the host
+	// doesn't answer HEAD requests.
+	useEffect(() => {
+		if (photoState === "loading") return;
+		onPhotoResolved?.(
+			listing.vin,
+			photoState !== "failed" && photoState !== "missing",
+		);
+	}, [photoState, listing.vin, onPhotoResolved]);
 
-  // The feed gives a dealer name but no city/state, so the meta line falls back
-  // to the seller rather than rendering an orphaned comma.
-  const place =
-    [listing.dealer?.city, listing.dealer?.state].filter(Boolean).join(', ') ||
-    listing.dealer?.name ||
-    '';
+	// The feed gives a dealer name but no city/state, so the meta line falls back
+	// to the seller rather than rendering an orphaned comma.
+	const place =
+		[listing.dealer?.city, listing.dealer?.state].filter(Boolean).join(", ") ||
+		listing.dealer?.name ||
+		"";
 
-  return (
-    <div
-      ref={cardRefSetter}
-      onMouseEnter={onHover}
-      onMouseLeave={onLeave}
-      className="rounded-xl overflow-hidden transition-all"
-      style={{
-        background: 'var(--color-surface)',
-        border: hovered ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
-        boxShadow: hovered ? '0 8px 24px rgba(37,99,235,0.25)' : '0 1px 2px rgba(0,0,0,0.05)',
-        transform: hovered ? 'translateY(-2px)' : 'translateY(0)',
-      }}
-    >
-      <div
-        className="relative w-full"
-        style={{
-          aspectRatio: '16 / 10',
-          background: 'linear-gradient(135deg, rgba(100,116,139,0.15), rgba(100,116,139,0.06))',
-          borderBottom: '1px solid var(--color-border)',
-        }}
-      >
-        {photo && photoState !== 'failed' && (
-          <img
-            src={photo}
-            alt={`${listing.year || ''} ${listing.make || ''} ${listing.model || ''}`.trim()}
-            loading="lazy"
-            onLoad={() => setPhotoState('loaded')}
-            // Dealer photo hosts break links constantly — the feed builds
-            // image URLs from the VIN and a fair number 404. Falling back to a
-            // placeholder keeps the card intact instead of showing a broken
-            // image icon.
-            onError={() => setPhotoState('failed')}
-            className="absolute inset-0 w-full h-full"
-            style={{
-              objectFit: 'cover',
-              // Fade in so a loaded photo replaces the spinner smoothly rather
-              // than snapping in.
-              opacity: photoState === 'loaded' ? 1 : 0,
-              transition: 'opacity 220ms ease',
-            }}
-          />
-        )}
+	return (
+		<div
+			ref={cardRefSetter}
+			onMouseEnter={onHover}
+			onMouseLeave={onLeave}
+			className="rounded-xl overflow-hidden transition-all"
+			style={{
+				background: "var(--color-surface)",
+				border: hovered
+					? "1px solid var(--color-accent)"
+					: "1px solid var(--color-border)",
+				boxShadow: hovered
+					? "0 8px 24px rgba(37,99,235,0.25)"
+					: "0 1px 2px rgba(0,0,0,0.05)",
+				transform: hovered ? "translateY(-2px)" : "translateY(0)",
+			}}
+		>
+			<div
+				className="relative w-full"
+				style={{
+					aspectRatio: "16 / 10",
+					background:
+						"linear-gradient(135deg, rgba(100,116,139,0.15), rgba(100,116,139,0.06))",
+					borderBottom: "1px solid var(--color-border)",
+				}}
+			>
+				{photo && photoState !== "failed" && (
+					<img
+						src={photo}
+						alt={`${listing.year || ""} ${listing.make || ""} ${listing.model || ""}`.trim()}
+						loading="lazy"
+						onLoad={() => setPhotoState("loaded")}
+						// Dealer photo hosts break links constantly — the feed builds
+						// image URLs from the VIN and a fair number 404. Falling back to a
+						// placeholder keeps the card intact instead of showing a broken
+						// image icon.
+						onError={() => setPhotoState("failed")}
+						className="absolute inset-0 w-full h-full"
+						style={{
+							objectFit: "cover",
+							// Fade in so a loaded photo replaces the spinner smoothly rather
+							// than snapping in.
+							opacity: photoState === "loaded" ? 1 : 0,
+							transition: "opacity 220ms ease",
+						}}
+					/>
+				)}
 
-        {photoState === 'loading' && (
-          <div className="absolute inset-0 flex items-center justify-center" aria-label="Loading photo">
-            <Loader2 size={18} className="animate-spin" style={{ color: 'var(--color-muted)', opacity: 0.6 }} />
-          </div>
-        )}
+				{photoState === "loading" && (
+					<div
+						className="absolute inset-0 flex items-center justify-center"
+						aria-label="Loading photo"
+					>
+						<Loader2
+							size={18}
+							className="animate-spin"
+							style={{ color: "var(--color-muted)", opacity: 0.6 }}
+						/>
+					</div>
+				)}
 
-        {(photoState === 'failed' || photoState === 'missing') && (
-          <div
-            className="absolute inset-0 flex items-center justify-center text-xs font-semibold"
-            style={{ color: 'var(--color-muted)', opacity: 0.5 }}
-          >
-            No photos
-          </div>
-        )}
-        <span
-          className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full text-white"
-          style={{ background: sourceMeta.color }}
-        >
-          {sourceMeta.label}
-        </span>
-        <button
-          onClick={(e) => { e.stopPropagation(); onFavorite(); }}
-          className="absolute top-2 right-2 w-7 h-7 rounded-full flex items-center justify-center transition-all hover:scale-110"
-          style={{
-            background: 'rgba(0,0,0,0.55)',
-            color: favorited ? '#ef4444' : '#fff',
-            backdropFilter: 'blur(6px)',
-          }}
-          title={favorited ? 'Remove from saved' : 'Save listing'}
-          aria-label={favorited ? 'Remove from saved' : 'Save listing'}
-        >
-          <Heart size={13} fill={favorited ? '#ef4444' : 'none'} />
-        </button>
-        <div
-          className="absolute bottom-2 left-2 text-white font-bold text-lg px-2.5 py-1 rounded-md"
-          style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)' }}
-        >
-          {formatPrice(listing.price)}
-        </div>
-      </div>
+				{(photoState === "failed" || photoState === "missing") && (
+					<div
+						className="absolute inset-0 flex items-center justify-center text-xs font-semibold"
+						style={{ color: "var(--color-muted)", opacity: 0.5 }}
+					>
+						No photos
+					</div>
+				)}
+				<span
+					className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full text-white"
+					style={{ background: sourceMeta.color }}
+				>
+					{sourceMeta.label}
+				</span>
+				<button
+					onClick={(e) => {
+						e.stopPropagation();
+						onFavorite();
+					}}
+					className="absolute top-2 right-2 w-7 h-7 rounded-full flex items-center justify-center transition-all hover:scale-110"
+					style={{
+						background: "rgba(0,0,0,0.55)",
+						color: favorited ? "#ef4444" : "#fff",
+						backdropFilter: "blur(6px)",
+					}}
+					title={favorited ? "Remove from saved" : "Save listing"}
+					aria-label={favorited ? "Remove from saved" : "Save listing"}
+				>
+					<Heart size={13} fill={favorited ? "#ef4444" : "none"} />
+				</button>
+				<div
+					className="absolute bottom-2 left-2 text-white font-bold text-lg px-2.5 py-1 rounded-md"
+					style={{
+						background: "rgba(0,0,0,0.65)",
+						backdropFilter: "blur(4px)",
+					}}
+				>
+					{formatPrice(listing.price)}
+				</div>
+			</div>
 
-      <div className="p-3">
-        <div className="font-semibold text-sm leading-tight" style={{ color: 'var(--color-text)' }}>
-          {[listing.year, listing.make, listing.model].filter(Boolean).join(' ') || 'Vehicle'}
-        </div>
-        {listing.trim && (
-          <div className="text-xs mt-0.5 truncate" style={{ color: 'var(--color-muted)' }}>{listing.trim}</div>
-        )}
-        <div className="flex items-center gap-2 mt-2 text-[11px]" style={{ color: 'var(--color-muted)' }}>
-          <span>{formatMiles(listing.mileage)}</span>
-          {place && <><span>·</span><span className="truncate">{place}</span></>}
-        </div>
+			<div className="p-3">
+				<div
+					className="font-semibold text-sm leading-tight"
+					style={{ color: "var(--color-text)" }}
+				>
+					{[listing.year, listing.make, listing.model]
+						.filter(Boolean)
+						.join(" ") || "Vehicle"}
+				</div>
+				{listing.trim && (
+					<div
+						className="text-xs mt-0.5 truncate"
+						style={{ color: "var(--color-muted)" }}
+					>
+						{listing.trim}
+					</div>
+				)}
+				<div
+					className="flex items-center gap-2 mt-2 text-[11px]"
+					style={{ color: "var(--color-muted)" }}
+				>
+					<span>{formatMiles(listing.mileage)}</span>
+					{place && (
+						<>
+							<span>·</span>
+							<span className="truncate">{place}</span>
+						</>
+					)}
+				</div>
 
-        <div className="flex items-center gap-1.5 mt-3">
-          <button
-            onClick={onAnalyze}
-            className="flex-1 inline-flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold text-white transition-all hover:opacity-90"
-            style={{ background: 'var(--color-accent)' }}
-          >
-            <Sparkles size={11} />
-            Analyze
-          </button>
-          {/* CARFAX lives behind a carfax.com page, not a file we can read — so
+				<div className="flex items-center gap-1.5 mt-3">
+					<button
+						onClick={onAnalyze}
+						className="flex-1 inline-flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold text-white transition-all hover:opacity-90"
+						style={{ background: "var(--color-accent)" }}
+					>
+						<Sparkles size={11} />
+						Analyze
+					</button>
+					{/* CARFAX lives behind a carfax.com page, not a file we can read — so
               it's offered as a link for the user to open rather than attached
               to the analysis. See the comment in ChatInterface's Analyze
               handler for why attaching it would be actively misleading. */}
-          {listing.carfaxUrl && (
-            <a
-              href={listing.carfaxUrl}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center justify-center w-7 h-7 rounded-md transition-all hover:opacity-80"
-              style={{ border: '1px solid var(--color-border)', color: 'var(--color-muted)' }}
-              title="View CARFAX report"
-              aria-label="View CARFAX report"
-            >
-              <FileText size={11} />
-            </a>
-          )}
-          {listing.listingUrl && (
-            <a
-              href={listing.listingUrl}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center justify-center w-7 h-7 rounded-md transition-all hover:opacity-80"
-              style={{ border: '1px solid var(--color-border)', color: 'var(--color-muted)' }}
-              title="Open original listing"
-            >
-              <ExternalLink size={11} />
-            </a>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+					{listing.carfaxUrl && (
+						<a
+							href={listing.carfaxUrl}
+							target="_blank"
+							rel="noreferrer"
+							onClick={(e) => e.stopPropagation()}
+							className="inline-flex items-center justify-center w-7 h-7 rounded-md transition-all hover:opacity-80"
+							style={{
+								border: "1px solid var(--color-border)",
+								color: "var(--color-muted)",
+							}}
+							title="View CARFAX report"
+							aria-label="View CARFAX report"
+						>
+							<FileText size={11} />
+						</a>
+					)}
+					{listing.listingUrl && (
+						<a
+							href={listing.listingUrl}
+							target="_blank"
+							rel="noreferrer"
+							onClick={(e) => e.stopPropagation()}
+							className="inline-flex items-center justify-center w-7 h-7 rounded-md transition-all hover:opacity-80"
+							style={{
+								border: "1px solid var(--color-border)",
+								color: "var(--color-muted)",
+							}}
+							title="Open original listing"
+						>
+							<ExternalLink size={11} />
+						</a>
+					)}
+				</div>
+			</div>
+		</div>
+	);
 }
 
 export default function FindACarPanel({ onAnalyzeListing, onBack }) {
-  // Basemap follows the app theme. Falls back to dark if the provider is
-  // somehow absent so the map never renders untiled.
-  const { dark } = useTheme() || { dark: true };
-  const tileTheme = dark ? 'dark' : 'light';
+	// Basemap follows the app theme. Falls back to dark if the provider is
+	// somehow absent so the map never renders untiled.
+	const { dark } = useTheme() || { dark: true };
+	const tileTheme = dark ? "dark" : "light";
 
-  // ── Filter state ──────────────────────────────────────────────────
-  const [q, setQ] = useState('');
-  const [zip, setZip] = useState('');
-  const [radius, setRadius] = useState('nationwide');
-  const [priceRange, setPriceRange] = useState([0, PRICE_CEILING]);
-  const [mileageRange, setMileageRange] = useState([0, MILEAGE_CEILING]);
-  const [activeSources, setActiveSources] = useState([]); // [] = all
-  const [yearRange, setYearRange] = useState([EARLIEST_YEAR, LATEST_YEAR]);
-  const [sort, setSort] = useState('updatedAt.desc');
-  const [cpoOnly, setCpoOnly] = useState(false);
-  const [bodyStyle, setBodyStyle] = useState('');  // '' = any
+	// ── Filter state ──────────────────────────────────────────────────
+	const [q, setQ] = useState("");
+	const [zip, setZip] = useState("");
+	const [radius, setRadius] = useState("nationwide");
+	const [priceRange, setPriceRange] = useState([0, PRICE_CEILING]);
+	const [mileageRange, setMileageRange] = useState([0, MILEAGE_CEILING]);
+	const [activeSources, setActiveSources] = useState([]); // [] = all
+	const [yearRange, setYearRange] = useState([EARLIEST_YEAR, LATEST_YEAR]);
+	const [sort, setSort] = useState("updatedAt.desc");
+	const [cpoOnly, setCpoOnly] = useState(false);
+	const [bodyStyle, setBodyStyle] = useState(""); // '' = any
+	const [condition, setCondition] = useState(""); // '' = any, 'new' | 'used'
+	// Agent-only server filters (no sidebar control).
+	const [searchState, setSearchState] = useState(""); // 2-letter US state
+	const [searchColor, setSearchColor] = useState(""); // exterior color
+	// Provider — 'cars' (Auto.dev) or 'motorcycles' (MarketCheck). The rest of
+	// the panel is otherwise the same; only the upstream endpoint and the make
+	// list swap. Persisted so a return visit lands in whichever mode the user
+	// was last using.
+	const [provider, setProvider] = useState(() => {
+		try {
+			return window.localStorage.getItem("vincritiq.find.provider") === "motorcycles"
+				? "motorcycles"
+				: "cars";
+		} catch {
+			return "cars";
+		}
+	});
+	useEffect(() => {
+		try {
+			window.localStorage.setItem("vincritiq.find.provider", provider);
+		} catch {
+			/* ignore */
+		}
+	}, [provider]);
+	// Reset make/model when switching providers — the Audi S5 (cars) is not the
+	// Kawasaki S5 (bikes), so a stale "S5" in the box would query the wrong
+	// upstream. Everything else (year, price, mileage) is provider-neutral.
+	const switchProvider = useCallback((next) => {
+		if (next === provider) return;
+		setProvider(next);
+		setQ("");
+		// Body style is car-only; clearing it here means switching to bikes and
+		// back to cars doesn't leave a stale filter that would over-narrow the
+		// cars view without any visible chip.
+		setBodyStyle("");
+	}, [provider]);
 
-  // ── Data state ────────────────────────────────────────────────────
-  const [rawListings, setRawListings] = useState([]);
-  const [origin, setOrigin] = useState(null);
-  const [total, setTotal] = useState(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState(null);
-  // Bumped only by a fresh search, never by "Load more". Photo-ordering state
-  // keys off this so an append doesn't wipe what page 1 already resolved.
-  const [searchEpoch, setSearchEpoch] = useState(0);
+	// ── Data state ────────────────────────────────────────────────────
+	const [rawListings, setRawListings] = useState([]);
+	const [origin, setOrigin] = useState(null);
+	const [total, setTotal] = useState(null);
+	const [hasMore, setHasMore] = useState(false);
+	const [page, setPage] = useState(1);
+	const [loading, setLoading] = useState(true);
+	const [loadingMore, setLoadingMore] = useState(false);
+	const [error, setError] = useState(null);
+	// Bumped only by a fresh search, never by "Load more". Photo-ordering state
+	// keys off this so an append doesn't wipe what page 1 already resolved.
+	const [searchEpoch, setSearchEpoch] = useState(0);
 
-  // ── UI state ──────────────────────────────────────────────────────
-  const [hoveredVin, setHoveredVin] = useState(null);
-  const [geoLocating, setGeoLocating] = useState(false);
-  // Saved listings are stored as full objects, not just VINs.
-  //
-  // A VIN set was only usable while the listing happened to be in the current
-  // result set — save a car, search something else, and the favourite pointed
-  // at nothing. Keeping the whole record means the saved view works no matter
-  // what's on screen, and survives a reload via localStorage.
-  //
-  // localStorage rather than Firestore because saving shouldn't require an
-  // account. Moving this to the user doc later would make it sync across
-  // devices; the shape is already a plain array of listings.
-  const [favorites, setFavorites] = useState(() => {
-    try {
-      const raw = window.localStorage.getItem(FAVORITES_KEY);
-      const parsed = raw ? JSON.parse(raw) : [];
-      return new Map(Array.isArray(parsed) ? parsed.filter((l) => l?.vin).map((l) => [l.vin, l]) : []);
-    } catch {
-      return new Map(); // corrupt or unavailable storage shouldn't break the panel
-    }
-  });
-  const [viewingFavorites, setViewingFavorites] = useState(false);
-  // Phone-only: the filter rail is an off-canvas sheet below md.
-  const [filtersOpen, setFiltersOpen] = useState(false);
+	// ── UI state ──────────────────────────────────────────────────────
+	const [hoveredVin, setHoveredVin] = useState(null);
+	const [geoLocating, setGeoLocating] = useState(false);
+	// Vehicle-finder agent. `agentPillHidden` (persisted) controls the
+	// dismissible "ask VinCritiq to find your vehicle" nudge — once dismissed
+	// the small wand button in the toolbar is the only entry point, Gemini-style.
+	const [agentOpen, setAgentOpen] = useState(false);
+	const [agentPillHidden, setAgentPillHidden] = useState(() => {
+		try {
+			return window.localStorage.getItem(AGENT_PILL_KEY) === "1";
+		} catch {
+			return false;
+		}
+	});
+	const dismissAgentPill = useCallback(() => {
+		setAgentPillHidden(true);
+		try {
+			window.localStorage.setItem(AGENT_PILL_KEY, "1");
+		} catch {
+			/* private mode — pill just reappears next load, harmless */
+		}
+	}, []);
+	// Saved listings are stored as full objects, not just VINs.
+	//
+	// A VIN set was only usable while the listing happened to be in the current
+	// result set — save a car, search something else, and the favourite pointed
+	// at nothing. Keeping the whole record means the saved view works no matter
+	// what's on screen, and survives a reload via localStorage.
+	//
+	// localStorage rather than Firestore because saving shouldn't require an
+	// account. Moving this to the user doc later would make it sync across
+	// devices; the shape is already a plain array of listings.
+	const [favorites, setFavorites] = useState(() => {
+		try {
+			const raw = window.localStorage.getItem(FAVORITES_KEY);
+			const parsed = raw ? JSON.parse(raw) : [];
+			return new Map(
+				Array.isArray(parsed)
+					? parsed.filter((l) => l?.vin).map((l) => [l.vin, l])
+					: [],
+			);
+		} catch {
+			return new Map(); // corrupt or unavailable storage shouldn't break the panel
+		}
+	});
+	const [viewingFavorites, setViewingFavorites] = useState(false);
+	// Phone-only: the filter rail is an off-canvas sheet below md.
+	const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // A couple of strings have to shorten on phones, and text content can't be
-  // swapped with a CSS breakpoint the way layout can. Tracked in JS against
-  // the same 640px boundary Tailwind's `sm` uses.
-  const [isNarrow, setIsNarrow] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 639px)');
-    const onChange = (e) => setIsNarrow(e.matches);
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
+	// A couple of strings have to shorten on phones, and text content can't be
+	// swapped with a CSS breakpoint the way layout can. Tracked in JS against
+	// the same 640px boundary Tailwind's `sm` uses.
+	const [isNarrow, setIsNarrow] = useState(
+		() =>
+			typeof window !== "undefined" &&
+			window.matchMedia("(max-width: 639px)").matches,
+	);
+	useEffect(() => {
+		const mq = window.matchMedia("(max-width: 639px)");
+		const onChange = (e) => setIsNarrow(e.matches);
+		mq.addEventListener("change", onChange);
+		return () => mq.removeEventListener("change", onChange);
+	}, []);
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favorites.values()]));
-    } catch {
-      // Quota exceeded or private mode — saving still works for this session.
-    }
-  }, [favorites]);
-  const [mapFrac, setMapFrac] = useState(MAP_DEFAULT_FRAC);
-  const cardRefs = useRef(new Map());
-  const abortRef = useRef(null);
-  const gridRef = useRef(null);
-  const columnRef = useRef(null);
-  // The wheel handler is a native non-passive listener (see below) and can't
-  // re-subscribe on every render, so it reads the live value through a ref.
-  const mapFracRef = useRef(MAP_DEFAULT_FRAC);
-  useEffect(() => { mapFracRef.current = mapFrac; }, [mapFrac]);
+	useEffect(() => {
+		try {
+			window.localStorage.setItem(
+				FAVORITES_KEY,
+				JSON.stringify([...favorites.values()]),
+			);
+		} catch {
+			// Quota exceeded or private mode — saving still works for this session.
+		}
+	}, [favorites]);
+	const [mapFrac, setMapFrac] = useState(MAP_DEFAULT_FRAC);
+	const cardRefs = useRef(new Map());
+	const abortRef = useRef(null);
+	const gridRef = useRef(null);
+	const columnRef = useRef(null);
+	// The wheel handler is a native non-passive listener (see below) and can't
+	// re-subscribe on every render, so it reads the live value through a ref.
+	const mapFracRef = useRef(MAP_DEFAULT_FRAC);
+	useEffect(() => {
+		mapFracRef.current = mapFrac;
+	}, [mapFrac]);
 
-  // Collapsing-header behaviour: while the listing grid is scrolled to the top,
-  // the wheel resizes the map instead of scrolling the list. Scroll up to grow
-  // it, down to shrink it, and once it bottoms out the wheel goes back to
-  // scrolling listings normally. One continuous surface, no buttons.
-  //
-  // This has to be a native listener with { passive: false }: React's onWheel
-  // is registered passively, so preventDefault() there is a no-op and the list
-  // would scroll underneath the resize.
-  useEffect(() => {
-    const el = gridRef.current;
-    if (!el) return undefined;
+	// Collapsing-header behaviour: while the listing grid is scrolled to the top,
+	// the wheel resizes the map instead of scrolling the list. Scroll up to grow
+	// it, down to shrink it, and once it bottoms out the wheel goes back to
+	// scrolling listings normally. One continuous surface, no buttons.
+	//
+	// This has to be a native listener with { passive: false }: React's onWheel
+	// is registered passively, so preventDefault() there is a no-op and the list
+	// would scroll underneath the resize.
+	useEffect(() => {
+		const el = gridRef.current;
+		if (!el) return undefined;
 
-    const onWheel = (e) => {
-      if (el.scrollTop > 0) return;              // reading the list — leave it alone
-      const growing = e.deltaY < 0;
-      const frac = mapFracRef.current;
-      // Nothing left to give in this direction: release the gesture to the list
-      // rather than swallowing it.
-      if (growing && frac >= MAP_MAX_FRAC) return;
-      if (!growing && frac <= MAP_MIN_FRAC) return;
+		const onWheel = (e) => {
+			if (el.scrollTop > 0) return; // reading the list — leave it alone
+			const growing = e.deltaY < 0;
+			const frac = mapFracRef.current;
+			// Nothing left to give in this direction: release the gesture to the list
+			// rather than swallowing it.
+			if (growing && frac >= MAP_MAX_FRAC) return;
+			if (!growing && frac <= MAP_MIN_FRAC) return;
 
-      const columnHeight = columnRef.current?.clientHeight || window.innerHeight;
-      e.preventDefault();
-      setMapFrac(clamp(frac - e.deltaY / columnHeight, MAP_MIN_FRAC, MAP_MAX_FRAC));
-    };
+			const columnHeight =
+				columnRef.current?.clientHeight || window.innerHeight;
+			e.preventDefault();
+			setMapFrac(
+				clamp(frac - e.deltaY / columnHeight, MAP_MIN_FRAC, MAP_MAX_FRAC),
+			);
+		};
 
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, []);
+		el.addEventListener("wheel", onWheel, { passive: false });
+		return () => el.removeEventListener("wheel", onWheel);
+	}, []);
 
-  const toggleSource = (s) => {
-    setActiveSources((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
-  };
-  const toggleFavorite = (listing) => {
-    setFavorites((prev) => {
-      const next = new Map(prev);
-      if (next.has(listing.vin)) next.delete(listing.vin);
-      else next.set(listing.vin, listing);
-      return next;
-    });
-  };
+	const toggleSource = (s) => {
+		setActiveSources((prev) =>
+			prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s],
+		);
+	};
+	const toggleFavorite = (listing) => {
+		setFavorites((prev) => {
+			const next = new Map(prev);
+			if (next.has(listing.vin)) next.delete(listing.vin);
+			else next.set(listing.vin, listing);
+			return next;
+		});
+	};
 
-  const zipValid = /^\d{5}$/.test(zip.trim());
+	const zipValid = /^\d{5}$/.test(zip.trim());
 
-  // Only the filters that require a server round-trip belong here. Mileage,
-  // source, and trim are applied locally by refineListings, so typing in
-  // those controls costs nothing against the monthly API quota.
-  const serverFilters = useMemo(
-    () => ({
-      q,
-      zip: zipValid ? zip.trim() : '',
-      radius,
-      priceRange,
-      yearRange,
-      sort,
-      cpoOnly,
-      bodyStyle,
-    }),
-    [q, zip, zipValid, radius, priceRange, yearRange, sort, cpoOnly, bodyStyle],
-  );
+	// Server-side filters. Source badge and trim substring are still refined
+	// locally (refineListings) so those cost no API calls; mileage moved here
+	// because client-refining it shrank a fetched page to a handful of rows and
+	// collapsed the map onto them (only sent when actually capped, so an at-max
+	// slider still costs nothing).
+	const serverFilters = useMemo(
+		() => ({
+			q,
+			zip: zipValid ? zip.trim() : "",
+			radius,
+			priceRange,
+			mileageRange,
+			yearRange,
+			sort,
+			cpoOnly,
+			bodyStyle,
+			condition,
+			// state + color have no sidebar control — they're set only by the
+			// Vehicle Finder agent ("in Arizona" / "black"). Included here so the
+			// main grid honors them the same as any other server filter.
+			state: searchState,
+			color: searchColor,
+			// Provider — swaps the upstream (Auto.dev cars vs MarketCheck bikes)
+			// without changing the query shape.
+			provider,
+		}),
+		[
+			q,
+			zip,
+			zipValid,
+			radius,
+			priceRange,
+			mileageRange,
+			yearRange,
+			sort,
+			cpoOnly,
+			bodyStyle,
+			condition,
+			searchState,
+			searchColor,
+			provider,
+		],
+	);
 
-  const runSearch = useCallback(async (filters, nextPage, { append, refineArgs } = {}) => {
-    // Abort whatever is in flight — with a debounced search box the previous
-    // request is always stale, and letting it resolve would clobber the newer
-    // results out of order.
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
+	// The agent fills the panel's own filters, so its matches render in the main
+	// grid + map (not inside the modal). One atomic apply → the debounced effect
+	// fires a single search.
+	const applyAgentFilters = useCallback((s) => {
+		setQ(s.q);
+		setPriceRange(s.priceRange);
+		setMileageRange(s.mileageRange);
+		setYearRange(s.yearRange);
+		setBodyStyle(s.bodyStyle);
+		setCpoOnly(s.cpoOnly);
+		setCondition(s.condition || "");
+		setSearchState(s.state);
+		setSearchColor(s.color);
+		setZip(s.zip);
+		setRadius(s.radius);
+		setSort(s.sort);
+		setViewingFavorites(false); // make sure the grid shows results, not saved
+	}, []);
 
-    if (append) setLoadingMore(true); else { setLoading(true); setSearchEpoch((n) => n + 1); }
-    setError(null);
+	// ── Make / Model dropdowns ────────────────────────────────────────
+	//
+	// The search box `q` stays the single source of truth — the dropdowns are
+	// just a structured way to edit it. So the selected make/model are DERIVED
+	// from q (which also means they reflect whatever the agent set, or the user
+	// typed), and picking one writes back into q.
+	const parsedQuery = useMemo(() => parseQuery(q, provider), [q, provider]);
+	const selectedMake = makeDisplayName(parsedQuery.make, provider);
+	const selectedModelRaw = parsedQuery.model || "";
 
-    try {
-      // ── Fresh search: one page, replace ──
-      if (!append) {
-        const result = await fetchListings({ ...filters, page: nextPage, signal: controller.signal });
-        setRawListings(result.listings);
-        setOrigin(result.origin);
-        setTotal(result.total);
-        // Upstream keeps advertising a `next` link past its pagination depth
-        // limit, where it then serves empty pages. An empty result is the real
-        // end of the road regardless of what the envelope claims.
-        setHasMore(result.hasMore && result.listings.length > 0);
-        setPage(result.page);
-        return;
-      }
+	// Models for the chosen make, fetched from Auto.dev facets (exact names).
+	const [modelOptions, setModelOptions] = useState([]);
+	const [modelsLoading, setModelsLoading] = useState(false);
+	useEffect(() => {
+		if (!selectedMake) {
+			setModelOptions([]);
+			return undefined;
+		}
+		let cancelled = false;
+		const controller = new AbortController();
+		setModelsLoading(true);
+		fetchModelsForMake(selectedMake, controller.signal, provider)
+			.then((list) => {
+				if (!cancelled) setModelOptions(list);
+			})
+			.catch(() => {})
+			.finally(() => {
+				if (!cancelled) setModelsLoading(false);
+			});
+		return () => {
+			cancelled = true;
+			controller.abort();
+		};
+	}, [selectedMake]);
 
-      // ── Load more: accrue ~LOAD_MORE_MIN *refined* net-new listings ──
-      //
-      // A single upstream page is 20 raw rows, but the client-side refine pass
-      // (source / mileage / trim / radius) can trim that to a handful when a
-      // filter is active — so one fetch per click sometimes added only a few
-      // cards. Instead we pull pages until the refined count of this batch
-      // reaches the target, we run out, or we hit the per-click page cap. The
-      // cap keeps a single click from burning a chunk of the 1,000/mo quota;
-      // in the common unfiltered case the first page already clears the target
-      // and the loop stops after one call.
-      let collected = [];
-      let curPage = nextPage;
-      let more = false;
-      let lastTotal = null;
-      for (let i = 0; i < LOAD_MORE_MAX_PAGES; i++) {
-        const result = await fetchListings({ ...filters, page: curPage, signal: controller.signal });
-        collected = collected.concat(result.listings);
-        more = result.hasMore && result.listings.length > 0;
-        lastTotal = result.total;
-        curPage = result.page + 1;
-        const refinedCount = refineArgs
-          ? refineListings(collected, refineArgs).length
-          : collected.length;
-        if (!more || refinedCount >= LOAD_MORE_MIN) break;
-      }
+	// The <select> value must equal one of its options exactly; q may hold a
+	// differently-cased token ("s5"), so resolve it against the fetched list.
+	const selectedModel =
+		modelOptions.find((m) => m.toLowerCase() === selectedModelRaw.toLowerCase()) || "";
 
-      // Dedupe against what's already on screen so an overlapping page can't
-      // produce duplicate React keys (VINs are the grid key).
-      setRawListings((prev) => {
-        const seen = new Set(prev.map((l) => l.vin));
-        const fresh = collected.filter((l) => l.vin && !seen.has(l.vin));
-        return [...prev, ...fresh];
-      });
-      if (lastTotal != null) setTotal(lastTotal);
-      setHasMore(more);
-      setPage(curPage - 1);
-    } catch (err) {
-      if (err?.name === 'AbortError') return; // superseded; the newer search owns the UI
-      setError({ message: err?.message || 'Something went wrong.', code: err?.code });
-      if (!append) setRawListings([]);
-    } finally {
-      if (controller === abortRef.current) {
-        setLoadingMore(false);
-        setLoading(false);
-      }
-    }
-  }, []);
+	const onMakeChange = useCallback((nextMake) => {
+		// Changing the make resets the model — q becomes just the make (or empty).
+		setQ(nextMake || "");
+	}, []);
+	const onModelChange = useCallback(
+		(nextModel) => {
+			setQ([selectedMake, nextModel].filter(Boolean).join(" "));
+		},
+		[selectedMake],
+	);
 
-  // Debounced search on every server-relevant filter change. 450ms is long
-  // enough that typing "toyota camry" is one request rather than twelve.
-  useEffect(() => {
-    const t = setTimeout(() => { runSearch(serverFilters, 1); }, 450);
-    return () => clearTimeout(t);
-  }, [serverFilters, runSearch]);
+	const runSearch = useCallback(
+		async (filters, nextPage, { append, refineArgs } = {}) => {
+			// Abort whatever is in flight — with a debounced search box the previous
+			// request is always stale, and letting it resolve would clobber the newer
+			// results out of order.
+			abortRef.current?.abort();
+			const controller = new AbortController();
+			abortRef.current = controller;
 
-  // Cancel any in-flight request when the panel unmounts, so a resolved
-  // fetch can't setState on an unmounted component.
-  useEffect(() => () => abortRef.current?.abort(), []);
+			if (append) setLoadingMore(true);
+			else {
+				setLoading(true);
+				setSearchEpoch((n) => n + 1);
+			}
+			setError(null);
 
-  // Ask the browser for the user's location and reverse it into a ZIP, so
-  // radius search works without the user knowing their own postal code.
-  //
-  // BigDataCloud's reverse-geocode-client endpoint is key-less, CORS-enabled,
-  // and free for exactly this browser-side use — unlike Zippopotam (which is
-  // forward-only) or Nominatim (which asks you not to call it from a browser
-  // at volume).
-  const useMyLocation = useCallback(() => {
-    if (!navigator.geolocation) return;
-    setGeoLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      async ({ coords }) => {
-        try {
-          const res = await fetch(
-            'https://api.bigdatacloud.net/data/reverse-geocode-client' +
-              `?latitude=${coords.latitude}&longitude=${coords.longitude}&localityLanguage=en`,
-          );
-          if (!res.ok) throw new Error('reverse geocode failed');
-          const data = await res.json();
-          const found = String(data?.postcode || '').match(/\d{5}/)?.[0];
-          if (found) { setZip(found); setRadius(100); }
-        } catch {
-          // Silent: the ZIP box is right there and still works by hand.
-        } finally {
-          setGeoLocating(false);
-        }
-      },
-      () => setGeoLocating(false),
-      { timeout: 8000 },
-    );
-  }, []);
+			try {
+				// ── Fresh search: one page, replace ──
+				if (!append) {
+					const result = await fetchListings({
+						...filters,
+						page: nextPage,
+						signal: controller.signal,
+					});
+					setRawListings(result.listings);
+					setOrigin(result.origin);
+					setTotal(result.total);
+					// Upstream keeps advertising a `next` link past its pagination depth
+					// limit, where it then serves empty pages. An empty result is the real
+					// end of the road regardless of what the envelope claims.
+					setHasMore(result.hasMore && result.listings.length > 0);
+					setPage(result.page);
+					return;
+				}
 
-  // ── Photo-first ordering ──────────────────────────────────────────
-  //
-  // A card can only learn its photo is a dead link by trying to load it, so the
-  // ordering can't be decided up front. Cards report in as they resolve, and
-  // the result is applied on a short debounce: without it, twenty images
-  // resolving at slightly different moments would reshuffle the grid twenty
-  // times under the user's cursor. One settle, one reflow.
-  const [photoMisses, setPhotoMisses] = useState(() => new Set());
-  const [orderKey, setOrderKey] = useState(() => new Set());
-  // Reordering is only allowed to happen while this window is open — the first
-  // couple of seconds after a fresh search, when the visible cards are
-  // resolving. Images below the fold load lazily as the user scrolls, and
-  // without the window those late resolutions would yank cards around long
-  // after the page settled.
-  const [sortWindowOpen, setSortWindowOpen] = useState(true);
+				// ── Load more: accrue ~LOAD_MORE_MIN *refined* net-new listings ──
+				//
+				// A single upstream page is 20 raw rows, but the client-side refine pass
+				// (source / mileage / trim / radius) can trim that to a handful when a
+				// filter is active — so one fetch per click sometimes added only a few
+				// cards. Instead we pull pages until the refined count of this batch
+				// reaches the target, we run out, or we hit the per-click page cap. The
+				// cap keeps a single click from burning a chunk of the 1,000/mo quota;
+				// in the common unfiltered case the first page already clears the target
+				// and the loop stops after one call.
+				let collected = [];
+				let curPage = nextPage;
+				let more = false;
+				let lastTotal = null;
+				for (let i = 0; i < LOAD_MORE_MAX_PAGES; i++) {
+					const result = await fetchListings({
+						...filters,
+						page: curPage,
+						signal: controller.signal,
+					});
+					collected = collected.concat(result.listings);
+					more = result.hasMore && result.listings.length > 0;
+					lastTotal = result.total;
+					curPage = result.page + 1;
+					const refinedCount = refineArgs
+						? refineListings(collected, refineArgs).length
+						: collected.length;
+					if (!more || refinedCount >= LOAD_MORE_MIN) break;
+				}
 
-  const handlePhotoResolved = useCallback((vin, hasPhoto) => {
-    if (hasPhoto) return; // only misses affect ordering
-    setPhotoMisses((prev) => (prev.has(vin) ? prev : new Set(prev).add(vin)));
-  }, []);
+				// Dedupe against what's already on screen so an overlapping page can't
+				// produce duplicate React keys (VINs are the grid key).
+				setRawListings((prev) => {
+					const seen = new Set(prev.map((l) => l.vin));
+					const fresh = collected.filter((l) => l.vin && !seen.has(l.vin));
+					return [...prev, ...fresh];
+				});
+				if (lastTotal != null) setTotal(lastTotal);
+				setHasMore(more);
+				setPage(curPage - 1);
+			} catch (err) {
+				if (err?.name === "AbortError") return; // superseded; the newer search owns the UI
+				setError({
+					message: err?.message || "Something went wrong.",
+					code: err?.code,
+				});
+				if (!append) setRawListings([]);
+			} finally {
+				if (controller === abortRef.current) {
+					setLoadingMore(false);
+					setLoading(false);
+				}
+			}
+		},
+		[],
+	);
 
-  // A new search invalidates what we learned; appending a page does not.
-  // Resetting on every rawListings change would discard the misses already
-  // known for page 1, and the cards for those listings are still mounted so
-  // they'd never re-report — the photo-less ones would silently float back up.
-  useEffect(() => {
-    setPhotoMisses(new Set());
-    setOrderKey(new Set());
-    setSortWindowOpen(true);
-    const t = setTimeout(() => setSortWindowOpen(false), 2500);
-    return () => clearTimeout(t);
-  }, [searchEpoch]);
+	// Debounced search on every server-relevant filter change. 450ms is long
+	// enough that typing "toyota camry" is one request rather than twelve.
+	useEffect(() => {
+		const t = setTimeout(() => {
+			runSearch(serverFilters, 1);
+		}, 450);
+		return () => clearTimeout(t);
+	}, [serverFilters, runSearch]);
 
-  useEffect(() => {
-    if (!sortWindowOpen) return undefined;
-    const t = setTimeout(() => setOrderKey(photoMisses), 350);
-    return () => clearTimeout(t);
-  }, [photoMisses, sortWindowOpen]);
+	// Cancel any in-flight request when the panel unmounts, so a resolved
+	// fetch can't setState on an unmounted component.
+	useEffect(() => () => abortRef.current?.abort(), []);
 
-  // ── Local refinements over the fetched page ───────────────────────
-  const listings = useMemo(() => {
-    const refined = refineListings(rawListings, { q, mileageRange, sources: activeSources, radius, origin });
-    // Stable partition rather than a comparator sort: everything keeps its
-    // relative order, the known-photoless simply move to the end.
-    const withPhotos = [];
-    const without = [];
-    for (const l of refined) {
-      (orderKey.has(l.vin) ? without : withPhotos).push(l);
-    }
-    return [...withPhotos, ...without];
-  }, [rawListings, q, mileageRange, activeSources, radius, origin, orderKey]);
+	// Ask the browser for the user's location and reverse it into a ZIP, so
+	// radius search works without the user knowing their own postal code.
+	//
+	// BigDataCloud's reverse-geocode-client endpoint is key-less, CORS-enabled,
+	// and free for exactly this browser-side use — unlike Zippopotam (which is
+	// forward-only) or Nominatim (which asks you not to call it from a browser
+	// at volume).
+	const useMyLocation = useCallback(() => {
+		if (!navigator.geolocation) return;
+		setGeoLocating(true);
+		navigator.geolocation.getCurrentPosition(
+			async ({ coords }) => {
+				try {
+					const res = await fetch(
+						"https://api.bigdatacloud.net/data/reverse-geocode-client" +
+							`?latitude=${coords.latitude}&longitude=${coords.longitude}&localityLanguage=en`,
+					);
+					if (!res.ok) throw new Error("reverse geocode failed");
+					const data = await res.json();
+					const found = String(data?.postcode || "").match(/\d{5}/)?.[0];
+					if (found) {
+						setZip(found);
+						setRadius(100);
+					}
+				} catch {
+					// Silent: the ZIP box is right there and still works by hand.
+				} finally {
+					setGeoLocating(false);
+				}
+			},
+			() => setGeoLocating(false),
+			{ timeout: 8000 },
+		);
+	}, []);
 
-  // ── Map ↔ card hover sync helpers ─────────────────────────────────
-  const handlePinHover = (vin) => {
-    setHoveredVin(vin);
-    const node = cardRefs.current.get(vin);
-    if (node) node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  };
+	// ── Photo-first ordering ──────────────────────────────────────────
+	//
+	// A card can only learn its photo is a dead link by trying to load it, so the
+	// ordering can't be decided up front. Cards report in as they resolve, and
+	// the result is applied on a short debounce: without it, twenty images
+	// resolving at slightly different moments would reshuffle the grid twenty
+	// times under the user's cursor. One settle, one reflow.
+	const [photoMisses, setPhotoMisses] = useState(() => new Set());
+	const [orderKey, setOrderKey] = useState(() => new Set());
+	// Reordering is only allowed to happen while this window is open — the first
+	// couple of seconds after a fresh search, when the visible cards are
+	// resolving. Images below the fold load lazily as the user scrolls, and
+	// without the window those late resolutions would yank cards around long
+	// after the page settled.
+	const [sortWindowOpen, setSortWindowOpen] = useState(true);
 
-  // The saved view is a straight swap of the collection everything else renders
-  // from — grid, map pins, and counter all follow it, so no branching downstream.
-  const savedListings = useMemo(() => [...favorites.values()].reverse(), [favorites]);
-  const displayed = viewingFavorites ? savedListings : listings;
+	const handlePhotoResolved = useCallback((vin, hasPhoto) => {
+		if (hasPhoto) return; // only misses affect ordering
+		setPhotoMisses((prev) => (prev.has(vin) ? prev : new Set(prev).add(vin)));
+	}, []);
 
-  const mappable = useMemo(
-    () => displayed.filter((l) => Number.isFinite(l.dealer?.lat) && Number.isFinite(l.dealer?.lng)),
-    [displayed],
-  );
+	// A new search invalidates what we learned; appending a page does not.
+	// Resetting on every rawListings change would discard the misses already
+	// known for page 1, and the cards for those listings are still mounted so
+	// they'd never re-report — the photo-less ones would silently float back up.
+	useEffect(() => {
+		setPhotoMisses(new Set());
+		setOrderKey(new Set());
+		setSortWindowOpen(true);
+		const t = setTimeout(() => setSortWindowOpen(false), 2500);
+		return () => clearTimeout(t);
+	}, [searchEpoch]);
 
-  // Source pills are derived from the fetched page rather than hardcoded, so
-  // the UI never offers a filter that can't match anything. Ordered by
-  // SOURCE_LABELS so the pills don't reshuffle between searches.
-  const availableSources = useMemo(() => {
-    const present = new Set(rawListings.map((l) => l.dealer?.source).filter(Boolean));
-    return Object.keys(SOURCE_LABELS).filter((id) => present.has(id));
-  }, [rawListings]);
+	useEffect(() => {
+		if (!sortWindowOpen) return undefined;
+		const t = setTimeout(() => setOrderKey(photoMisses), 350);
+		return () => clearTimeout(t);
+	}, [photoMisses, sortWindowOpen]);
 
-  // Drop any active source filter that the new result set can't satisfy —
-  // otherwise a stale selection silently filters the whole grid to empty.
-  useEffect(() => {
-    setActiveSources((prev) => {
-      const next = prev.filter((s) => availableSources.includes(s));
-      return next.length === prev.length ? prev : next;
-    });
-  }, [availableSources]);
+	// ── Local refinements over the fetched page ───────────────────────
+	const listings = useMemo(() => {
+		const refined = refineListings(rawListings, {
+			q,
+			mileageRange,
+			sources: activeSources,
+			radius,
+			origin,
+		});
+		// Stable partition rather than a comparator sort: everything keeps its
+		// relative order, the known-photoless simply move to the end.
+		const withPhotos = [];
+		const without = [];
+		for (const l of refined) {
+			(orderKey.has(l.vin) ? without : withPhotos).push(l);
+		}
+		return [...withPhotos, ...without];
+	}, [rawListings, q, mileageRange, activeSources, radius, origin, orderKey]);
 
-  const notConfigured = error?.code === 'listings_not_configured';
+	// ── Map ↔ card hover sync helpers ─────────────────────────────────
+	const handlePinHover = (vin) => {
+		setHoveredVin(vin);
+		const node = cardRefs.current.get(vin);
+		if (node) node.scrollIntoView({ behavior: "smooth", block: "nearest" });
+	};
 
-  return (
-    // NOTE: the sheet + backdrop below use `absolute`, not `fixed`.
-    // .mode-track carries a transform, which makes it the containing block
-    // for fixed-position descendants — a `fixed` sheet was being positioned
-    // against the 200%-wide track and landed off-screen. Anchoring to this
-    // panel instead keeps it where the user can see it.
-    <div className="flex flex-col h-full relative overflow-hidden" style={{ background: 'var(--color-bg)' }}>
-      {/* Top toolbar: back button + search box. Find takes over the
+	// The saved view is a straight swap of the collection everything else renders
+	// from — grid, map pins, and counter all follow it, so no branching downstream.
+	const savedListings = useMemo(
+		() => [...favorites.values()].reverse(),
+		[favorites],
+	);
+	// VIN set for the agent modal's Save-state (its cards live outside the grid).
+	const displayed = viewingFavorites ? savedListings : listings;
+
+	const mappable = useMemo(
+		() =>
+			displayed.filter(
+				(l) => Number.isFinite(l.dealer?.lat) && Number.isFinite(l.dealer?.lng),
+			),
+		[displayed],
+	);
+
+	// Source pills are derived from the fetched page rather than hardcoded, so
+	// the UI never offers a filter that can't match anything. Ordered by
+	// SOURCE_LABELS so the pills don't reshuffle between searches.
+	const availableSources = useMemo(() => {
+		const present = new Set(
+			rawListings.map((l) => l.dealer?.source).filter(Boolean),
+		);
+		return Object.keys(SOURCE_LABELS).filter((id) => present.has(id));
+	}, [rawListings]);
+
+	// Drop any active source filter that the new result set can't satisfy —
+	// otherwise a stale selection silently filters the whole grid to empty.
+	useEffect(() => {
+		setActiveSources((prev) => {
+			const next = prev.filter((s) => availableSources.includes(s));
+			return next.length === prev.length ? prev : next;
+		});
+	}, [availableSources]);
+
+	const notConfigured = error?.code === "listings_not_configured";
+
+	const { activeMode, setActiveMode, startNewChat } = useChat();
+
+	const handleClick = (mode) => {
+		if (mode === activeMode) return;
+		setActiveMode(mode);
+		// Switching modes lands the user on an empty new-chat state for that
+		// tab. The sidebar still shows sessions of the new mode so they can
+		// click into one if they want; otherwise they start fresh.
+		if (typeof startNewChat === "function") startNewChat();
+	};
+
+	return (
+		// NOTE: the sheet + backdrop below use `absolute`, not `fixed`.
+		// .mode-track carries a transform, which makes it the containing block
+		// for fixed-position descendants — a `fixed` sheet was being positioned
+		// against the 200%-wide track and landed off-screen. Anchoring to this
+		// panel instead keeps it where the user can see it.
+		<div
+			className="flex flex-col h-full relative overflow-hidden"
+			style={{ background: "var(--color-bg)" }}
+		>
+			{/* Top toolbar: back button + search box. Find takes over the
           full canvas (sidebar + tabs are hidden by the parent), so this
           row is the user's only navigation affordance back to chat. */}
-      <div className="flex-shrink-0 px-3 md:px-6 py-3 md:py-4 flex items-center gap-2 md:gap-3 safe-top" style={{ borderBottom: '1px solid var(--color-border)' }}>
-        {typeof onBack === 'function' && (
-          <button
-            onClick={onBack}
-            title="Back to chat"
-            aria-label="Back to chat"
-            className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold transition-all hover:opacity-80"
-            style={{
-              background: 'var(--color-surface)',
-              border: '1px solid var(--color-border)',
-              color: 'var(--color-text)',
-            }}
-          >
-            <ArrowLeft size={13} />
-            <span className="hidden sm:inline">Back</span>
-          </button>
-        )}
-        <div className="flex-1 max-w-2xl mx-auto relative">
-          {loading ? (
-            <Loader2
-              size={14}
-              className="absolute left-3 top-1/2 -translate-y-1/2 animate-spin"
-              style={{ color: 'var(--color-accent)' }}
-            />
-          ) : (
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--color-muted)' }} />
-          )}
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder={isNarrow ? "Search make, model, or VIN" : "Search by make and model — e.g. “Toyota Camry” — or paste a VIN"}
-            className="w-full pl-9 pr-3 py-2.5 rounded-full text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
-            style={{
-              background: 'var(--color-surface)',
-              border: '1px solid var(--color-border)',
-              color: 'var(--color-text)',
-            }}
-          />
-        </div>
+			<div
+				// className="flex-shrink-0 px-3 md:px-6 py-3 md:py-4 flex items-left gap-2 md:gap-3 safe-top"
+				className="flex-shrink-0 px-3 md:px-6 py-3 md:py-4 flex items-center justify-between gap-2 md:gap-3 safe-top"
+				style={{ borderBottom: "1px solid var(--color-border)" }}
+			>
+				<div
+					className="flex items-center gap-1 p-1 rounded-xl flex-shrink-0"
+					style={{
+						background: "var(--color-surface)",
+						border: "1px solid var(--color-border)",
+						maxWidth: 480,
+					}}
+					role="tablist"
+					aria-label="Analysis mode"
+				>
+					{TABS.map((tab) => {
+						const Icon = tab.icon;
+						const active = activeMode === tab.id;
+						return (
+							<button
+								key={tab.id}
+								onClick={() => !tab.disabled && handleClick(tab.id)}
+								disabled={tab.disabled}
+								role="tab"
+								aria-selected={active}
+								title={tab.description}
+								className="flex-1 flex items-center justify-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-2 rounded-lg text-xs sm:text-sm font-medium transition-all disabled:cursor-not-allowed"
+								style={{
+									background: active ? "var(--color-accent)" : "transparent",
+									color: active
+										? "#fff"
+										: tab.disabled
+											? "var(--color-muted)"
+											: "var(--color-text)",
+									opacity: tab.disabled ? 0.5 : 1,
+									fontWeight: active ? 600 : 500,
+								}}
+							>
+								<Icon size={14} className="flex-shrink-0" />
+								<span className="whitespace-nowrap hidden sm:inline">
+									{tab.label}
+								</span>
+								<span className="whitespace-nowrap sm:hidden">{tab.short}</span>
+							</button>
+						);
+					})}
+				</div>
+				<div className="flex-1 max-w-2xl mx-auto relative">
+					{loading ? (
+						<Loader2
+							size={14}
+							className="absolute left-3 top-1/2 -translate-y-1/2 animate-spin"
+							style={{ color: "var(--color-accent)" }}
+						/>
+					) : (
+						<Search
+							size={14}
+							className="absolute left-3 top-1/2 -translate-y-1/2"
+							style={{ color: "var(--color-muted)" }}
+						/>
+					)}
+					<input
+						value={q}
+						onChange={(e) => setQ(e.target.value)}
+						placeholder={
+							isNarrow
+								? provider === "motorcycles"
+									? "Search motorcycles"
+									: "Search make, model, or VIN"
+								: provider === "motorcycles"
+									? "Search motorcycles — e.g. “Honda CRF” or “Harley Street Glide”"
+									: "Search by make and model — e.g. “Toyota Camry” — or paste a VIN"
+						}
+						className="w-full pl-9 pr-3 py-2.5 rounded-full text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+						style={{
+							background: "var(--color-surface)",
+							border: "1px solid var(--color-border)",
+							color: "var(--color-text)",
+						}}
+					/>
+				</div>
 
-        <button
-          onClick={() => setFiltersOpen(true)}
-          aria-label="Show filters"
-          className="md:hidden flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-2 rounded-full text-xs font-semibold"
-          style={{
-            background: 'var(--color-surface)',
-            border: '1px solid var(--color-border)',
-            color: 'var(--color-text)',
-          }}
-        >
-          <SlidersHorizontal size={13} />
-        </button>
+				<button
+					onClick={() => setFiltersOpen(true)}
+					aria-label="Show filters"
+					className="md:hidden flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-2 rounded-full text-xs font-semibold"
+					style={{
+						background: "var(--color-surface)",
+						border: "1px solid var(--color-border)",
+						color: "var(--color-text)",
+					}}
+				>
+					<SlidersHorizontal size={13} />
+				</button>
 
-        {/* Saved listings. Doubles as the toggle into the saved-only view, so
+				{/* Vehicle Finder agent — describe a car in plain English and it
+            searches live inventory. Small icon-first entry point that sits
+            next to Saved; the dismissible pill below is the louder nudge. */}
+				<button
+					onClick={() => setAgentOpen(true)}
+					title="Ask VinCritiq to find your vehicle"
+					aria-label="Ask VinCritiq to find your vehicle"
+					className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold transition-all hover:opacity-80"
+					style={{
+						background: "var(--color-surface)",
+						border: "1px solid var(--color-accent)",
+						color: "var(--color-accent)",
+					}}
+				>
+					<Wand2 size={13} />
+					<span className="hidden sm:inline">Find for me</span>
+				</button>
+
+				{/* Saved listings. Doubles as the toggle into the saved-only view, so
             the heart on each card has somewhere to lead. */}
-        <button
-          onClick={() => setViewingFavorites((v) => !v)}
-          title={viewingFavorites ? 'Back to search results' : 'View saved listings'}
-          aria-label={viewingFavorites ? 'Back to search results' : 'View saved listings'}
-          aria-pressed={viewingFavorites}
-          className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold transition-all hover:opacity-80"
-          style={{
-            background: viewingFavorites ? 'var(--color-accent)' : 'var(--color-surface)',
-            border: `1px solid ${viewingFavorites ? 'var(--color-accent)' : 'var(--color-border)'}`,
-            color: viewingFavorites ? '#fff' : 'var(--color-text)',
-          }}
-        >
-          <Heart
-            size={13}
-            fill={favorites.size > 0 ? (viewingFavorites ? '#fff' : '#ef4444') : 'none'}
-            color={viewingFavorites ? '#fff' : favorites.size > 0 ? '#ef4444' : 'currentColor'}
-          />
-          <span className="hidden sm:inline">Saved</span>
-          {favorites.size > 0 && (
-            <span
-              className="inline-flex items-center justify-center rounded-full text-[10px] font-bold px-1.5"
-              style={{
-                minWidth: 17,
-                height: 17,
-                background: viewingFavorites ? 'rgba(255,255,255,0.25)' : 'var(--color-accent)',
-                color: '#fff',
-              }}
-            >
-              {favorites.size}
-            </span>
-          )}
-        </button>
-      </div>
+				<button
+					onClick={() => setViewingFavorites((v) => !v)}
+					title={
+						viewingFavorites ? "Back to search results" : "View saved listings"
+					}
+					aria-label={
+						viewingFavorites ? "Back to search results" : "View saved listings"
+					}
+					aria-pressed={viewingFavorites}
+					className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold transition-all hover:opacity-80"
+					style={{
+						background: viewingFavorites
+							? "var(--color-accent)"
+							: "var(--color-surface)",
+						border: `1px solid ${viewingFavorites ? "var(--color-accent)" : "var(--color-border)"}`,
+						color: viewingFavorites ? "#fff" : "var(--color-text)",
+					}}
+				>
+					<Heart
+						size={13}
+						fill={
+							favorites.size > 0
+								? viewingFavorites
+									? "#fff"
+									: "#ef4444"
+								: "none"
+						}
+						color={
+							viewingFavorites
+								? "#fff"
+								: favorites.size > 0
+									? "#ef4444"
+									: "currentColor"
+						}
+					/>
+					<span className="hidden sm:inline">Saved</span>
+					{favorites.size > 0 && (
+						<span
+							className="inline-flex items-center justify-center rounded-full text-[10px] font-bold px-1.5"
+							style={{
+								minWidth: 17,
+								height: 17,
+								background: viewingFavorites
+									? "rgba(255,255,255,0.25)"
+									: "var(--color-accent)",
+								color: "#fff",
+							}}
+						>
+							{favorites.size}
+						</span>
+					)}
+				</button>
+			</div>
 
-      {/* Main 3-pane layout */}
-      {filtersOpen && (
-        <div
-          className="md:hidden absolute inset-0"
-          style={{ background: 'rgba(0,0,0,0.5)', zIndex: 1000 }}
-          onClick={() => setFiltersOpen(false)}
-          aria-hidden="true"
-        />
-      )}
+			{/* Dismissible "ask the agent" nudge — Gemini-in-Gmail style. Sits
+          bottom-right, above the map attribution. Once the user hides it, the
+          toolbar wand button remains the entry point. Not shown while the
+          agent modal or the saved view is open. */}
+			{!agentPillHidden && !agentOpen && !viewingFavorites && (
+				<div
+					className="absolute z-[900] flex items-center gap-2 pl-3 pr-2 py-2 rounded-full"
+					style={{
+						right: 16,
+						bottom: 16,
+						background: "var(--color-surface)",
+						border: "1px solid var(--color-accent)",
+						boxShadow: "0 8px 28px rgba(37,99,235,0.28)",
+						maxWidth: "calc(100% - 32px)",
+					}}
+				>
+					<button
+						onClick={() => setAgentOpen(true)}
+						className="inline-flex items-center gap-2 text-xs font-semibold min-w-0"
+						style={{ color: "var(--color-text)" }}
+					>
+						<span
+							className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+							style={{ background: "var(--color-accent)" }}
+						>
+							<Sparkles size={13} className="text-white" />
+						</span>
+						<span className="truncate">
+							Press here to ask VinCritiq to find your vehicle
+						</span>
+					</button>
+					<button
+						onClick={dismissAgentPill}
+						title="Hide"
+						aria-label="Hide"
+						className="w-5 h-5 rounded-full inline-flex items-center justify-center flex-shrink-0 hover:opacity-70"
+						style={{ color: "var(--color-muted)" }}
+					>
+						<X size={13} />
+					</button>
+				</div>
+			)}
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Filters sidebar */}
-        {/* Filters. A 260px rail alongside a map and a card grid doesn't fit a
+			<FindAgentModal
+				open={agentOpen}
+				onClose={() => setAgentOpen(false)}
+				onApplyFilters={applyAgentFilters}
+				searchTotal={total}
+				searchLoading={loading}
+			/>
+
+			{/* Main 3-pane layout */}
+			{filtersOpen && (
+				<div
+					className="md:hidden absolute inset-0"
+					style={{ background: "rgba(0,0,0,0.5)", zIndex: 1000 }}
+					onClick={() => setFiltersOpen(false)}
+					aria-hidden="true"
+				/>
+			)}
+
+			<div className="flex-1 flex overflow-hidden">
+				{/* Filters sidebar */}
+				{/* Filters. A 260px rail alongside a map and a card grid doesn't fit a
             phone, so below md it becomes an off-canvas sheet toggled by the
             Filters button in the toolbar. */}
-        <aside
-          className={[
-            'flex-shrink-0 overflow-y-auto',
-            'max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:shadow-2xl',
-          ].join(' ')}
-          // The open/closed transform is an inline style rather than Tailwind
-          // translate utilities. Toggling between `translate-x-0` and
-          // `-translate-x-full` in the same variant leaves two equal-specificity
-          // rules whose winner depends on Tailwind's emit order, not on the
-          // order they're listed here — in practice the sheet stayed parked at
-          // -100% even with only the open class applied. Inline wins outright.
-          style={{
-            width: 260,
-            borderRight: '1px solid var(--color-border)',
-            background: 'var(--color-surface)',
-            ...(isNarrow
-              ? {
-                  transform: filtersOpen ? 'translateX(0)' : 'translateX(-100%)',
-                  transition: 'transform 200ms ease',
-                  // Above Leaflet. Its internal panes run to z-index 800 inside
-                  // the map's stacking context, so a modest z-45 sheet was
-                  // being painted over by the tiles.
-                  zIndex: 1001,
-                }
-              : null),
-          }}
-        >
-          <div className="p-4 space-y-5 safe-bottom">
-            <button
-              onClick={() => setFiltersOpen(false)}
-              className="md:hidden w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold"
-              style={{ border: '1px solid var(--color-border)', color: 'var(--color-text)' }}
-            >
-              <X size={13} />
-              Close filters
-            </button>
+				<aside
+					className={[
+						"flex-shrink-0 overflow-y-auto",
+						"max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:shadow-2xl",
+					].join(" ")}
+					// The open/closed transform is an inline style rather than Tailwind
+					// translate utilities. Toggling between `translate-x-0` and
+					// `-translate-x-full` in the same variant leaves two equal-specificity
+					// rules whose winner depends on Tailwind's emit order, not on the
+					// order they're listed here — in practice the sheet stayed parked at
+					// -100% even with only the open class applied. Inline wins outright.
+					style={{
+						width: 260,
+						borderRight: "1px solid var(--color-border)",
+						background: "var(--color-surface)",
+						...(isNarrow
+							? {
+									transform: filtersOpen
+										? "translateX(0)"
+										: "translateX(-100%)",
+									transition: "transform 200ms ease",
+									// Above Leaflet. Its internal panes run to z-index 800 inside
+									// the map's stacking context, so a modest z-45 sheet was
+									// being painted over by the tiles.
+									zIndex: 1001,
+								}
+							: null),
+					}}
+				>
+					<div className="p-4 space-y-5 safe-bottom">
+						<button
+							onClick={() => setFiltersOpen(false)}
+							className="md:hidden w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold"
+							style={{
+								border: "1px solid var(--color-border)",
+								color: "var(--color-text)",
+							}}
+						>
+							<X size={13} />
+							Close filters
+						</button>
 
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--color-muted)' }}>Location</div>
-              <div className="flex items-center gap-1.5">
-                <input
-                  value={zip}
-                  onChange={(e) => setZip(e.target.value.replace(/\D/g, '').slice(0, 5))}
-                  placeholder="ZIP code"
-                  inputMode="numeric"
-                  className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
-                  style={{
-                    background: 'var(--color-bg)',
-                    border: '1px solid var(--color-border)',
-                    color: 'var(--color-text)',
-                  }}
-                />
-                <button
-                  onClick={useMyLocation}
-                  disabled={geoLocating}
-                  title="Use my location"
-                  aria-label="Use my location"
-                  className="flex-shrink-0 w-7 h-7 rounded-md inline-flex items-center justify-center transition-all hover:opacity-80"
-                  style={{ border: '1px solid var(--color-border)', color: 'var(--color-muted)' }}
-                >
-                  {geoLocating ? <Loader2 size={13} className="animate-spin" /> : <MapPin size={13} />}
-                </button>
-              </div>
-            </div>
+						{/* Provider toggle — top of the sidebar so the mode is the first
+                thing the user sees. Cars use Auto.dev, motorcycles use
+                MarketCheck. Everything else in the sidebar is provider-neutral. */}
+						<div
+							className="grid grid-cols-2 gap-0.5 p-0.5 rounded-lg"
+							style={{
+								background: "var(--color-bg)",
+								border: "1px solid var(--color-border)",
+							}}
+							role="tablist"
+							aria-label="Vehicle category"
+						>
+							{[
+								{ id: "cars", label: "Cars" },
+								{ id: "motorcycles", label: "Motorcycles" },
+							].map((opt) => {
+								const active = provider === opt.id;
+								return (
+									<button
+										key={opt.id}
+										onClick={() => switchProvider(opt.id)}
+										role="tab"
+										aria-selected={active}
+										className="px-2 py-1.5 rounded-md text-xs font-semibold transition-all"
+										style={{
+											background: active ? "var(--color-accent)" : "transparent",
+											color: active ? "#fff" : "var(--color-text)",
+										}}
+									>
+										{opt.label}
+									</button>
+								);
+							})}
+						</div>
 
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--color-muted)' }}>Distance</div>
-              <div className="flex flex-wrap gap-1.5">
-                {DISTANCE_OPTIONS.map((opt) => (
-                  <FilterPill
-                    key={opt.id}
-                    active={radius === opt.id}
-                    onClick={() => setRadius(opt.id)}
-                    disabled={opt.id !== 'nationwide' && !zipValid}
-                    title={opt.id !== 'nationwide' && !zipValid ? 'Enter a ZIP code first' : undefined}
-                  >
-                    {opt.label}
-                  </FilterPill>
-                ))}
-              </div>
-              {!zipValid && radius !== 'nationwide' && (
-                <p className="text-[10px] mt-1" style={{ color: 'var(--color-muted)', opacity: 0.7 }}>
-                  Enter a ZIP code to search by radius.
-                </p>
-              )}
-            </div>
+						<div>
+							<div
+								className="text-xs font-semibold uppercase tracking-wider mb-2"
+								style={{ color: "var(--color-muted)" }}
+							>
+								Location
+							</div>
+							<div className="flex items-center gap-1.5">
+								<input
+									value={zip}
+									onChange={(e) =>
+										setZip(e.target.value.replace(/\D/g, "").slice(0, 5))
+									}
+									placeholder="ZIP code"
+									inputMode="numeric"
+									className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
+									style={{
+										background: "var(--color-bg)",
+										border: "1px solid var(--color-border)",
+										color: "var(--color-text)",
+									}}
+								/>
+								<button
+									onClick={useMyLocation}
+									disabled={geoLocating}
+									title="Use my location"
+									aria-label="Use my location"
+									className="flex-shrink-0 w-7 h-7 rounded-md inline-flex items-center justify-center transition-all hover:opacity-80"
+									style={{
+										border: "1px solid var(--color-border)",
+										color: "var(--color-muted)",
+									}}
+								>
+									{geoLocating ? (
+										<Loader2 size={13} className="animate-spin" />
+									) : (
+										<MapPin size={13} />
+									)}
+								</button>
+							</div>
+						</div>
 
-            {/* Only offer sources that actually appear in the current results.
+						<div>
+							<div
+								className="text-xs font-semibold uppercase tracking-wider mb-2"
+								style={{ color: "var(--color-muted)" }}
+							>
+								Distance
+							</div>
+							<div className="flex flex-wrap gap-1.5">
+								{DISTANCE_OPTIONS.map((opt) => (
+									<FilterPill
+										key={opt.id}
+										active={radius === opt.id}
+										onClick={() => setRadius(opt.id)}
+										disabled={opt.id !== "nationwide" && !zipValid}
+										title={
+											opt.id !== "nationwide" && !zipValid
+												? "Enter a ZIP code first"
+												: undefined
+										}
+									>
+										{opt.label}
+									</FilterPill>
+								))}
+							</div>
+							{!zipValid && radius !== "nationwide" && (
+								<p
+									className="text-[10px] mt-1"
+									style={{ color: "var(--color-muted)", opacity: 0.7 }}
+								>
+									Enter a ZIP code to search by radius.
+								</p>
+							)}
+						</div>
+
+						{/* Only offer sources that actually appear in the current results.
                 The Starter feed is overwhelmingly Carvana inventory, so a fixed
                 CarMax / Dealer / Private Seller pill row would have been three
                 buttons that always return nothing. Hidden entirely when there's
                 only one source to choose from — a filter with a single option
                 isn't a filter. */}
-            {availableSources.length > 1 && (
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--color-muted)' }}>Source</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {availableSources.map((id) => (
-                    <FilterPill
-                      key={id}
-                      active={activeSources.includes(id)}
-                      onClick={() => toggleSource(id)}
-                    >
-                      {SOURCE_LABELS[id]?.label || id}
-                    </FilterPill>
-                  ))}
-                </div>
-              </div>
-            )}
+						{availableSources.length > 1 && (
+							<div>
+								<div
+									className="text-xs font-semibold uppercase tracking-wider mb-2"
+									style={{ color: "var(--color-muted)" }}
+								>
+									Source
+								</div>
+								<div className="flex flex-wrap gap-1.5">
+									{availableSources.map((id) => (
+										<FilterPill
+											key={id}
+											active={activeSources.includes(id)}
+											onClick={() => toggleSource(id)}
+										>
+											{SOURCE_LABELS[id]?.label || id}
+										</FilterPill>
+									))}
+								</div>
+							</div>
+						)}
 
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--color-muted)' }}>Body style</div>
-              <div className="flex flex-wrap gap-1.5">
-                <FilterPill active={bodyStyle === ''} onClick={() => setBodyStyle('')}>Any</FilterPill>
-                {BODY_STYLES.map((b) => (
-                  <FilterPill key={b} active={bodyStyle === b} onClick={() => setBodyStyle(bodyStyle === b ? '' : b)}>
-                    {b}
-                  </FilterPill>
-                ))}
-              </div>
-            </div>
+						{/* New/Used — a real upstream filter on both providers
+                (Auto.dev's retailListing.used, MarketCheck's inventory_type). */}
+						<div>
+							<div
+								className="text-xs font-semibold uppercase tracking-wider mb-2"
+								style={{ color: "var(--color-muted)" }}
+							>
+								Condition
+							</div>
+							<div className="flex flex-wrap gap-1.5">
+								<FilterPill active={condition === ""} onClick={() => setCondition("")}>
+									Any
+								</FilterPill>
+								<FilterPill
+									active={condition === "new"}
+									onClick={() => setCondition(condition === "new" ? "" : "new")}
+								>
+									New
+								</FilterPill>
+								<FilterPill
+									active={condition === "used"}
+									onClick={() => setCondition(condition === "used" ? "" : "used")}
+								>
+									Used
+								</FilterPill>
+							</div>
+						</div>
 
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--color-muted)' }}>Sort by</div>
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value)}
-                className="w-full px-2.5 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
-                style={{
-                  background: 'var(--color-bg)',
-                  border: '1px solid var(--color-border)',
-                  color: 'var(--color-text)',
-                }}
-              >
-                {SORT_OPTIONS.map((o) => (
-                  <option key={o.id} value={o.id}>{o.label}</option>
-                ))}
-              </select>
-            </div>
+						{/* Body style is car-specific (Auto.dev's Car/SUV/Truck/Van).
+                MarketCheck's motorcycle catalog uses different categories
+                (cruiser, sport, dirt, etc.) and no equivalent filter param,
+                so the whole section is hidden in bike mode rather than
+                shown as a broken filter. */}
+						{provider !== "motorcycles" && (
+							<div>
+								<div
+									className="text-xs font-semibold uppercase tracking-wider mb-2"
+									style={{ color: "var(--color-muted)" }}
+								>
+									Body style
+								</div>
+								<div className="flex flex-wrap gap-1.5">
+									<FilterPill
+										active={bodyStyle === ""}
+										onClick={() => setBodyStyle("")}
+									>
+										Any
+									</FilterPill>
+									{BODY_STYLES.map((b) => (
+										<FilterPill
+											key={b}
+											active={bodyStyle === b}
+											onClick={() => setBodyStyle(bodyStyle === b ? "" : b)}
+										>
+											{b}
+										</FilterPill>
+									))}
+								</div>
+							</div>
+						)}
 
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center justify-between" style={{ color: 'var(--color-muted)' }}>
-                <span>Year</span>
-                <span style={{ color: 'var(--color-text)', opacity: 0.7 }}>
-                  {yearRange[0] === EARLIEST_YEAR && yearRange[1] === LATEST_YEAR
-                    ? 'Any'
-                    : `${yearRange[0]} – ${yearRange[1]}`}
-                </span>
-              </div>
-              {/* Two selects rather than a dual-thumb slider: year is a value
+						<div>
+							<div
+								className="text-xs font-semibold uppercase tracking-wider mb-2"
+								style={{ color: "var(--color-muted)" }}
+							>
+								Sort by
+							</div>
+							<select
+								value={sort}
+								onChange={(e) => setSort(e.target.value)}
+								className="w-full px-2.5 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
+								style={{
+									background: "var(--color-bg)",
+									border: "1px solid var(--color-border)",
+									color: "var(--color-text)",
+								}}
+							>
+								{SORT_OPTIONS.map((o) => (
+									<option key={o.id} value={o.id}>
+										{o.label}
+									</option>
+								))}
+							</select>
+						</div>
+
+						<div>
+							<div
+								className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center justify-between"
+								style={{ color: "var(--color-muted)" }}
+							>
+								<span>Year</span>
+								<span style={{ color: "var(--color-text)", opacity: 0.7 }}>
+									{yearRange[0] === EARLIEST_YEAR &&
+									yearRange[1] === LATEST_YEAR
+										? "Any"
+										: `${yearRange[0]} – ${yearRange[1]}`}
+								</span>
+							</div>
+							{/* Two selects rather than a dual-thumb slider: year is a value
                   people know exactly ("2019 or newer"), and picking it from a
                   list beats hunting for it by dragging. */}
-              <div className="flex items-center gap-1.5">
-                <select
-                  value={yearRange[0]}
-                  onChange={(e) => {
-                    const min = Number(e.target.value);
-                    setYearRange(([, max]) => [min, Math.max(min, max)]);
-                  }}
-                  className="flex-1 min-w-0 px-2 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
-                  style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }}
-                  aria-label="Earliest year"
-                >
-                  {YEAR_CHOICES.map((y) => <option key={y} value={y}>{y}</option>)}
-                </select>
-                <span className="text-xs" style={{ color: 'var(--color-muted)' }}>to</span>
-                <select
-                  value={yearRange[1]}
-                  onChange={(e) => {
-                    const max = Number(e.target.value);
-                    setYearRange(([min]) => [Math.min(min, max), max]);
-                  }}
-                  className="flex-1 min-w-0 px-2 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
-                  style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }}
-                  aria-label="Latest year"
-                >
-                  {YEAR_CHOICES.map((y) => <option key={y} value={y}>{y}</option>)}
-                </select>
-              </div>
-            </div>
+							<div className="flex items-center gap-1.5">
+								<select
+									value={yearRange[0]}
+									onChange={(e) => {
+										const min = Number(e.target.value);
+										setYearRange(([, max]) => [min, Math.max(min, max)]);
+									}}
+									className="flex-1 min-w-0 px-2 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
+									style={{
+										background: "var(--color-bg)",
+										border: "1px solid var(--color-border)",
+										color: "var(--color-text)",
+									}}
+									aria-label="Earliest year"
+								>
+									{YEAR_CHOICES.map((y) => (
+										<option key={y} value={y}>
+											{y}
+										</option>
+									))}
+								</select>
+								<span
+									className="text-xs"
+									style={{ color: "var(--color-muted)" }}
+								>
+									to
+								</span>
+								<select
+									value={yearRange[1]}
+									onChange={(e) => {
+										const max = Number(e.target.value);
+										setYearRange(([min]) => [Math.min(min, max), max]);
+									}}
+									className="flex-1 min-w-0 px-2 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
+									style={{
+										background: "var(--color-bg)",
+										border: "1px solid var(--color-border)",
+										color: "var(--color-text)",
+									}}
+									aria-label="Latest year"
+								>
+									{YEAR_CHOICES.map((y) => (
+										<option key={y} value={y}>
+											{y}
+										</option>
+									))}
+								</select>
+							</div>
+						</div>
+						{/* Make + Model. Model options are fetched for the chosen make
+                (exact Auto.dev names), so a selection always resolves to real
+                inventory. Both write back into the search box `q`. */}
+						<div>
+							<div
+								className="text-xs font-semibold uppercase tracking-wider mb-2"
+								style={{ color: "var(--color-muted)" }}
+							>
+								Make &amp; Model
+							</div>
+							<div className="space-y-1.5">
+								<select
+									value={selectedMake}
+									onChange={(e) => onMakeChange(e.target.value)}
+									className="w-full px-2.5 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500"
+									style={{
+										background: "var(--color-bg)",
+										border: "1px solid var(--color-border)",
+										color: "var(--color-text)",
+									}}
+									aria-label="Make"
+								>
+									<option value="">Any make</option>
+									{(provider === "motorcycles"
+										? MOTORCYCLE_MAKES_DISPLAY
+										: MAKES_DISPLAY
+									).map((m) => (
+										<option key={m} value={m}>
+											{m}
+										</option>
+									))}
+								</select>
+								<select
+									value={selectedModel}
+									onChange={(e) => onModelChange(e.target.value)}
+									disabled={!selectedMake || modelsLoading}
+									className="w-full px-2.5 py-1.5 rounded-md text-xs outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+									style={{
+										background: "var(--color-bg)",
+										border: "1px solid var(--color-border)",
+										color: "var(--color-text)",
+									}}
+									aria-label="Model"
+								>
+									<option value="">
+										{!selectedMake
+											? "Select a make first"
+											: modelsLoading
+												? "Loading models…"
+												: "Any model"}
+									</option>
+									{modelOptions.map((m) => (
+										<option key={m} value={m}>
+											{m}
+										</option>
+									))}
+								</select>
+							</div>
+						</div>
 
-            <div>
-              <label
-                className="flex items-center gap-2 cursor-pointer text-xs font-medium"
-                style={{ color: 'var(--color-text)' }}
-              >
-                <input
-                  type="checkbox"
-                  checked={cpoOnly}
-                  onChange={(e) => setCpoOnly(e.target.checked)}
-                  className="rounded"
-                  style={{ accentColor: 'var(--color-accent)' }}
-                />
-                Certified pre-owned only
-              </label>
-              <div className="text-[10px] mt-1 ml-6" style={{ color: 'var(--color-muted)', opacity: 0.7 }}>
-                Manufacturer-backed warranty and inspection.
-              </div>
-            </div>
+						<div>
+							<label
+								className="flex items-center gap-2 cursor-pointer text-xs font-medium"
+								style={{ color: "var(--color-text)" }}
+							>
+								<input
+									type="checkbox"
+									checked={cpoOnly}
+									onChange={(e) => setCpoOnly(e.target.checked)}
+									className="rounded"
+									style={{ accentColor: "var(--color-accent)" }}
+								/>
+								Certified pre-owned only
+							</label>
+							<div
+								className="text-[10px] mt-1 ml-6"
+								style={{ color: "var(--color-muted)", opacity: 0.7 }}
+							>
+								Manufacturer-backed warranty and inspection.
+							</div>
+						</div>
 
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center justify-between" style={{ color: 'var(--color-muted)' }}>
-                <span>Price</span>
-                <span style={{ color: 'var(--color-text)', opacity: 0.7 }}>
-                  {formatPrice(priceRange[0])} – {priceRange[1] >= PRICE_CEILING ? 'Any' : formatPrice(priceRange[1])}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={PRICE_CEILING}
-                step={5000}
-                value={priceRange[1]}
-                onChange={(e) => setPriceRange([priceRange[0], Number(e.target.value)])}
-                className="w-full"
-                aria-label="Maximum price"
-              />
-            </div>
+						<div>
+							<div
+								className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center justify-between"
+								style={{ color: "var(--color-muted)" }}
+							>
+								<span>Price</span>
+								<span style={{ color: "var(--color-text)", opacity: 0.7 }}>
+									{formatPrice(priceRange[0])} –{" "}
+									{priceRange[1] >= PRICE_CEILING
+										? "Any"
+										: formatPrice(priceRange[1])}
+								</span>
+							</div>
+							<input
+								type="range"
+								min={0}
+								max={PRICE_CEILING}
+								step={5000}
+								value={priceRange[1]}
+								onChange={(e) =>
+									setPriceRange([priceRange[0], Number(e.target.value)])
+								}
+								className="w-full"
+								aria-label="Maximum price"
+							/>
+						</div>
 
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center justify-between" style={{ color: 'var(--color-muted)' }}>
-                <span>Mileage</span>
-                <span style={{ color: 'var(--color-text)', opacity: 0.7 }}>
-                  {mileageRange[1] >= MILEAGE_CEILING ? 'Any' : `up to ${mileageRange[1].toLocaleString()} mi`}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={MILEAGE_CEILING}
-                step={5000}
-                value={mileageRange[1]}
-                onChange={(e) => setMileageRange([mileageRange[0], Number(e.target.value)])}
-                className="w-full"
-                aria-label="Maximum mileage"
-              />
-            </div>
+						<div>
+							<div
+								className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center justify-between"
+								style={{ color: "var(--color-muted)" }}
+							>
+								<span>Mileage</span>
+								<span style={{ color: "var(--color-text)", opacity: 0.7 }}>
+									{mileageRange[1] >= MILEAGE_CEILING
+										? "Any"
+										: `up to ${mileageRange[1].toLocaleString()} mi`}
+								</span>
+							</div>
+							<input
+								type="range"
+								min={0}
+								max={MILEAGE_CEILING}
+								step={5000}
+								value={mileageRange[1]}
+								onChange={(e) =>
+									setMileageRange([mileageRange[0], Number(e.target.value)])
+								}
+								className="w-full"
+								aria-label="Maximum mileage"
+							/>
+						</div>
 
-            <div className="pt-3" style={{ borderTop: '1px solid var(--color-border)' }}>
-              <div className="text-xs" style={{ color: 'var(--color-muted)' }}>
-                {viewingFavorites ? (
-                  <>Showing <span style={{ color: 'var(--color-text)', fontWeight: 600 }}>{displayed.length}</span> saved</>
-                ) : (
-                  <>
-                    Showing <span style={{ color: 'var(--color-text)', fontWeight: 600 }}>{displayed.length}</span>
-                    {Number.isFinite(total) && total > displayed.length ? ` of ${total.toLocaleString()} matches` : ' listings'}
-                  </>
-                )}
-              </div>
-              <div className="text-[10px] mt-1" style={{ color: 'var(--color-muted)', opacity: 0.6 }}>
-                {viewingFavorites ? 'Saved on this device' : 'Live dealer inventory · Auto.dev'}
-              </div>
-            </div>
-          </div>
-        </aside>
+						<div
+							className="pt-3"
+							style={{ borderTop: "1px solid var(--color-border)" }}
+						>
+							<div className="text-xs" style={{ color: "var(--color-muted)" }}>
+								{viewingFavorites ? (
+									<>
+										Showing{" "}
+										<span
+											style={{ color: "var(--color-text)", fontWeight: 600 }}
+										>
+											{displayed.length}
+										</span>{" "}
+										saved
+									</>
+								) : (
+									<>
+										Showing{" "}
+										<span
+											style={{ color: "var(--color-text)", fontWeight: 600 }}
+										>
+											{displayed.length}
+										</span>
+										{Number.isFinite(total) && total > displayed.length
+											? ` of ${total.toLocaleString()} matches`
+											: " listings"}
+									</>
+								)}
+							</div>
+							<div
+								className="text-[10px] mt-1"
+								style={{ color: "var(--color-muted)", opacity: 0.6 }}
+							>
+								{viewingFavorites
+									? "Saved on this device"
+									: provider === "motorcycles"
+										? "Live dealer inventory · MarketCheck"
+										: "Live dealer inventory · Auto.dev"}
+							</div>
+						</div>
+					</div>
+				</aside>
 
-        {/* Map + cards stack */}
-        <div className="flex-1 flex flex-col overflow-hidden" ref={columnRef}>
-          <div
-            className="flex-shrink-0 relative"
-            style={{
-              // Driven directly by the wheel gesture, so no CSS transition —
-              // an easing curve here would lag the cursor and feel rubbery.
-              height: `${(mapFrac * 100).toFixed(2)}%`,
-              borderBottom: '1px solid var(--color-border)',
-            }}
-          >
-            <MapContainer
-              center={US_CENTER}
-              zoom={4}
-              minZoom={3}
-              maxZoom={14}
-              scrollWheelZoom
-              zoomAnimation
-              style={{ height: '100%', width: '100%', background: MAP_THEME[tileTheme].background }}
-            >
-              {/* CARTO ships matched light/dark basemaps. `key` forces a
+				{/* Map + cards stack */}
+				<div className="flex-1 flex flex-col overflow-hidden" ref={columnRef}>
+					<div
+						className="flex-shrink-0 relative"
+						style={{
+							// Driven directly by the wheel gesture, so no CSS transition —
+							// an easing curve here would lag the cursor and feel rubbery.
+							height: `${(mapFrac * 100).toFixed(2)}%`,
+							borderBottom: "1px solid var(--color-border)",
+						}}
+					>
+						<MapContainer
+							center={US_CENTER}
+							zoom={4}
+							minZoom={3}
+							maxZoom={14}
+							scrollWheelZoom
+							zoomAnimation
+							style={{
+								height: "100%",
+								width: "100%",
+								background: MAP_THEME[tileTheme].background,
+							}}
+						>
+							{/* CARTO ships matched light/dark basemaps. `key` forces a
                   remount on theme change: TileLayer does support url updates,
                   but remounting also clears the cached tiles of the old
                   palette, which otherwise linger until they're panned out of
                   view. */}
-              <TileLayer
-                key={tileTheme}
-                attribution='&copy; OpenStreetMap &copy; CARTO'
-                url={MAP_THEME[tileTheme].url}
-                subdomains="abcd"
-                maxZoom={19}
-              />
-              <MapFocus listings={mappable} origin={origin} />
-              <MapResizer trigger={mapFrac} />
-              {mappable.map((l) => (
-                <Marker
-                  key={l.vin}
-                  position={[l.dealer.lat, l.dealer.lng]}
-                  icon={listingPin({ hovered: hoveredVin === l.vin, price: l.price, source: l.dealer.source, theme: tileTheme })}
-                  eventHandlers={{
-                    mouseover: () => handlePinHover(l.vin),
-                    mouseout:  () => setHoveredVin((v) => (v === l.vin ? null : v)),
-                    click:     () => onAnalyzeListing?.(l),
-                  }}
-                />
-              ))}
-            </MapContainer>
-          </div>
+							<TileLayer
+								key={tileTheme}
+								attribution="&copy; OpenStreetMap &copy; CARTO"
+								url={MAP_THEME[tileTheme].url}
+								subdomains="abcd"
+								maxZoom={19}
+							/>
+							<MapFocus listings={mappable} origin={origin} />
+							<MapResizer trigger={mapFrac} />
+							{mappable.map((l) => (
+								<Marker
+									key={l.vin}
+									position={[l.dealer.lat, l.dealer.lng]}
+									icon={listingPin({
+										hovered: hoveredVin === l.vin,
+										price: l.price,
+										source: l.dealer.source,
+										theme: tileTheme,
+									})}
+									eventHandlers={{
+										mouseover: () => handlePinHover(l.vin),
+										mouseout: () =>
+											setHoveredVin((v) => (v === l.vin ? null : v)),
+										click: () => onAnalyzeListing?.(l),
+									}}
+								/>
+							))}
+						</MapContainer>
+					</div>
 
-          <div className="flex-1 overflow-y-auto p-4" ref={gridRef}>
-            {error ? (
-              <div className="h-full flex flex-col items-center justify-center text-center px-6 gap-2">
-                <AlertCircle size={22} style={{ color: notConfigured ? 'var(--color-muted)' : '#ef4444' }} />
-                <div className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
-                  {notConfigured ? 'Listings aren’t connected yet' : 'Couldn’t load listings'}
-                </div>
-                <div className="text-xs max-w-md" style={{ color: 'var(--color-muted)' }}>{error.message}</div>
-                {!notConfigured && (
-                  <button
-                    onClick={() => runSearch(serverFilters, 1)}
-                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all hover:opacity-80"
-                    style={{ border: '1px solid var(--color-border)', color: 'var(--color-text)' }}
-                  >
-                    <RefreshCw size={12} />
-                    Try again
-                  </button>
-                )}
-              </div>
-            ) : loading ? (
-              <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {/* Skeletons rather than a spinner — the grid keeps its shape,
+					<div className="flex-1 overflow-y-auto p-4" ref={gridRef}>
+						{error ? (
+							<div className="h-full flex flex-col items-center justify-center text-center px-6 gap-2">
+								<AlertCircle
+									size={22}
+									style={{
+										color: notConfigured ? "var(--color-muted)" : "#ef4444",
+									}}
+								/>
+								<div
+									className="text-sm font-semibold"
+									style={{ color: "var(--color-text)" }}
+								>
+									{notConfigured
+										? "Listings aren’t connected yet"
+										: "Couldn’t load listings"}
+								</div>
+								<div
+									className="text-xs max-w-md"
+									style={{ color: "var(--color-muted)" }}
+								>
+									{error.message}
+								</div>
+								{!notConfigured && (
+									<button
+										onClick={() => runSearch(serverFilters, 1)}
+										className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all hover:opacity-80"
+										style={{
+											border: "1px solid var(--color-border)",
+											color: "var(--color-text)",
+										}}
+									>
+										<RefreshCw size={12} />
+										Try again
+									</button>
+								)}
+							</div>
+						) : loading ? (
+							<div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+								{/* Skeletons rather than a spinner — the grid keeps its shape,
                     so results don't shove the page around when they land. */}
-                {Array.from({ length: 8 }).map((_, i) => (
-                  <div
-                    key={i}
-                    className="rounded-xl overflow-hidden animate-pulse"
-                    style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-                  >
-                    <div style={{ aspectRatio: '16 / 10', background: 'rgba(100,116,139,0.15)' }} />
-                    <div className="p-3 space-y-2">
-                      <div style={{ height: 10, width: '70%', background: 'rgba(100,116,139,0.2)', borderRadius: 4 }} />
-                      <div style={{ height: 8, width: '45%', background: 'rgba(100,116,139,0.15)', borderRadius: 4 }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : displayed.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center px-6">
-                {viewingFavorites ? (
-                  <>
-                    <Heart size={22} style={{ color: 'var(--color-muted)', opacity: 0.5 }} />
-                    <div className="text-sm font-semibold mt-2" style={{ color: 'var(--color-text)' }}>No saved listings yet</div>
-                    <div className="text-xs mt-1 max-w-sm" style={{ color: 'var(--color-muted)' }}>
-                      Tap the heart on any listing to save it here. Saved cars stay put across searches and reloads.
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>No listings match your search</div>
-                    <div className="text-xs mt-1 max-w-sm" style={{ color: 'var(--color-muted)' }}>
-                      Try a broader make/model, widen the price, year, or mileage range, or increase the search radius.
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                  {displayed.map((l) => (
-                    <ListingCard
-                      key={l.vin}
-                      listing={l}
-                      hovered={hoveredVin === l.vin}
-                      favorited={favorites.has(l.vin)}
-                      onHover={() => setHoveredVin(l.vin)}
-                      onLeave={() => setHoveredVin((v) => (v === l.vin ? null : v))}
-                      onAnalyze={() => onAnalyzeListing?.(l)}
-                      onFavorite={() => toggleFavorite(l)}
-                      onPhotoResolved={handlePhotoResolved}
-                      cardRefSetter={(node) => {
-                        if (node) cardRefs.current.set(l.vin, node);
-                        else cardRefs.current.delete(l.vin);
-                      }}
-                    />
-                  ))}
-                </div>
+								{Array.from({ length: 8 }).map((_, i) => (
+									<div
+										key={i}
+										className="rounded-xl overflow-hidden animate-pulse"
+										style={{
+											background: "var(--color-surface)",
+											border: "1px solid var(--color-border)",
+										}}
+									>
+										<div
+											style={{
+												aspectRatio: "16 / 10",
+												background: "rgba(100,116,139,0.15)",
+											}}
+										/>
+										<div className="p-3 space-y-2">
+											<div
+												style={{
+													height: 10,
+													width: "70%",
+													background: "rgba(100,116,139,0.2)",
+													borderRadius: 4,
+												}}
+											/>
+											<div
+												style={{
+													height: 8,
+													width: "45%",
+													background: "rgba(100,116,139,0.15)",
+													borderRadius: 4,
+												}}
+											/>
+										</div>
+									</div>
+								))}
+							</div>
+						) : displayed.length === 0 ? (
+							<div className="h-full flex flex-col items-center justify-center text-center px-6">
+								{viewingFavorites ? (
+									<>
+										<Heart
+											size={22}
+											style={{ color: "var(--color-muted)", opacity: 0.5 }}
+										/>
+										<div
+											className="text-sm font-semibold mt-2"
+											style={{ color: "var(--color-text)" }}
+										>
+											No saved listings yet
+										</div>
+										<div
+											className="text-xs mt-1 max-w-sm"
+											style={{ color: "var(--color-muted)" }}
+										>
+											Tap the heart on any listing to save it here. Saved cars
+											stay put across searches and reloads.
+										</div>
+									</>
+								) : (
+									<>
+										<div
+											className="text-sm font-semibold"
+											style={{ color: "var(--color-text)" }}
+										>
+											No listings match your search
+										</div>
+										<div
+											className="text-xs mt-1 max-w-sm"
+											style={{ color: "var(--color-muted)" }}
+										>
+											Try a broader make/model, widen the price, year, or
+											mileage range, or increase the search radius.
+										</div>
+									</>
+								)}
+							</div>
+						) : (
+							<>
+								<div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+									{displayed.map((l) => (
+										<ListingCard
+											key={l.vin}
+											listing={l}
+											hovered={hoveredVin === l.vin}
+											favorited={favorites.has(l.vin)}
+											onHover={() => setHoveredVin(l.vin)}
+											onLeave={() =>
+												setHoveredVin((v) => (v === l.vin ? null : v))
+											}
+											onAnalyze={() => onAnalyzeListing?.(l)}
+											onFavorite={() => toggleFavorite(l)}
+											onPhotoResolved={handlePhotoResolved}
+											cardRefSetter={(node) => {
+												if (node) cardRefs.current.set(l.vin, node);
+												else cardRefs.current.delete(l.vin);
+											}}
+										/>
+									))}
+								</div>
 
-                {hasMore && (
-                  <div className="flex justify-center mt-4">
-                    <button
-                      onClick={() =>
-                        runSearch(serverFilters, page + 1, {
-                          append: true,
-                          // The refine args the loop uses to count how many of
-                          // each fetched page actually survive to the grid, so
-                          // it knows when it has gathered enough net-new.
-                          refineArgs: { q, mileageRange, sources: activeSources, radius, origin },
-                        })
-                      }
-                      disabled={loadingMore}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all hover:opacity-80"
-                      style={{
-                        background: 'var(--color-surface)',
-                        border: '1px solid var(--color-border)',
-                        color: 'var(--color-text)',
-                        opacity: loadingMore ? 0.6 : 1,
-                      }}
-                    >
-                      {loadingMore ? <Loader2 size={12} className="animate-spin" /> : null}
-                      {loadingMore ? 'Loading…' : 'Load more'}
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+								{hasMore && (
+									<div className="flex justify-center mt-4">
+										<button
+											onClick={() =>
+												runSearch(serverFilters, page + 1, {
+													append: true,
+													// The refine args the loop uses to count how many of
+													// each fetched page actually survive to the grid, so
+													// it knows when it has gathered enough net-new.
+													refineArgs: {
+														q,
+														mileageRange,
+														sources: activeSources,
+														radius,
+														origin,
+													},
+												})
+											}
+											disabled={loadingMore}
+											className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all hover:opacity-80"
+											style={{
+												background: "var(--color-surface)",
+												border: "1px solid var(--color-border)",
+												color: "var(--color-text)",
+												opacity: loadingMore ? 0.6 : 1,
+											}}
+										>
+											{loadingMore ? (
+												<Loader2 size={12} className="animate-spin" />
+											) : null}
+											{loadingMore ? "Loading…" : "Load more"}
+										</button>
+									</div>
+								)}
+							</>
+						)}
+					</div>
+				</div>
+			</div>
+		</div>
+	);
 }
