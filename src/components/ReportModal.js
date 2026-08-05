@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, Award, DollarSign, BarChart2, TrendingDown, Cpu, RotateCcw, Sliders, RefreshCw, Image as ImageIcon, Box, Plus, Maximize2, Minimize2 } from 'lucide-react';
+import { X, Award, DollarSign, BarChart2, TrendingDown, Cpu, RotateCcw, Sliders, RefreshCw, Image as ImageIcon, Box, Plus, Maximize2, Minimize2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, useGLTF, Environment } from '@react-three/drei';
 import * as THREE from 'three';
@@ -1132,6 +1132,13 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
   const [isNarrow, setIsNarrow] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
   );
+
+  // The report defaults to a lean view — verdict + pros/cons only — with the
+  // summary paragraph and the numeric breakdowns (metrics, price, financing,
+  // depreciation) tucked behind "More info". Feedback was that the full report
+  // read as information overload; leading with just the decision + reasons and
+  // letting the user opt into the detail fixes that without dropping anything.
+  const [showMore, setShowMore] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 767px)');
     const onChange = (e) => setIsNarrow(e.matches);
@@ -1394,12 +1401,12 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
           </div>
 
           <div className="p-6 space-y-4">
+            {/* Verdict — lean by default: rating + pros/cons only. */}
             {verdict && (
               <div className="rounded-xl p-5" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
-                <div className="flex items-center gap-3 mb-3"><VerdictBadge rating={verdict.rating} /></div>
-                <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text)' }}>{verdict.summary}</p>
-                {(verdict.pros?.length > 0 || verdict.cons?.length > 0) && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+                <div className="flex items-center gap-3 mb-4"><VerdictBadge rating={verdict.rating} /></div>
+                {(verdict.pros?.length > 0 || verdict.cons?.length > 0) ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {verdict.pros?.length > 0 && (
                       <div>
                         <p className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: '#1a7a45' }}>Pros</p>
@@ -1417,59 +1424,85 @@ export default function ReportModal({ report, vehicleColor, vehicleLabel, imageB
                       </div>
                     )}
                   </div>
+                ) : (
+                  // No pros/cons in the report — fall back to the summary so the
+                  // verdict box is never empty.
+                  <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text)' }}>{verdict.summary}</p>
                 )}
               </div>
             )}
 
-            {metrics?.length > 0 && (
-              <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--color-muted)' }}>Key Metrics</h3>
-                {/* 2x2 on small screens, 1x4 on large — both layouts stay
-                    visually balanced regardless of metric count. */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                  {metrics.slice(0, 4).map((m, i) => <MetricCard key={i} m={m} />)}
+            {/* More info — reveals the summary + the numeric breakdowns. */}
+            <button
+              onClick={() => setShowMore((v) => !v)}
+              aria-expanded={showMore}
+              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-semibold transition-all hover:opacity-80"
+              style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', color: 'var(--color-muted)' }}
+            >
+              {showMore ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              {showMore ? 'Less info' : 'More info'}
+            </button>
+
+            {showMore && (
+              <div className="space-y-4">
+                {verdict?.summary && (verdict.pros?.length > 0 || verdict.cons?.length > 0) && (
+                  <div className="rounded-xl p-4" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
+                    <h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--color-muted)' }}>Summary</h3>
+                    <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text)' }}>{verdict.summary}</p>
+                  </div>
+                )}
+
+                {metrics?.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--color-muted)' }}>Key Metrics</h3>
+                    {/* 2x2 on small screens, 1x4 on large — both layouts stay
+                        visually balanced regardless of metric count. */}
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      {metrics.slice(0, 4).map((m, i) => <MetricCard key={i} m={m} />)}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {pricing && (
+                    <Section icon={<DollarSign size={13} />} title="Price Analysis">
+                      <Row label="Asking Price" value={fmt(pricing.askingPrice, '$')} />
+                      <Row label="KBB Value" value={fmt(pricing.kbbValue, '$')} />
+                      <Row label="Market Average" value={fmt(pricing.marketAvg, '$')} />
+                      <Row label="vs. Market" value={fmtPct(pricing.priceVsMarketPct)} color={pricing.priceVsMarketPct > 5 ? '#c0392b' : pricing.priceVsMarketPct < -5 ? '#1a7a45' : '#b7550c'} />
+                    </Section>
+                  )}
+                  {(financing || pricing) && (
+                    <FinancingEditor
+                      financing={financing}
+                      pricing={pricing}
+                      onConfirmEdits={onConfirmEdits}
+                      isReanalyzing={isReanalyzing}
+                    />
+                  )}
                 </div>
+
+                {depreciation && (
+                  <Section icon={<TrendingDown size={13} />} title="Depreciation Curve">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                      {[
+                        { label: 'Annual Rate', val: depreciation.annualRatePct != null ? `${depreciation.annualRatePct}%` : '—' },
+                        { label: '1 Year', val: fmt(depreciation.projectedValue1yr, '$') },
+                        { label: '3 Years', val: fmt(depreciation.projectedValue3yr, '$') },
+                        { label: '5 Years', val: fmt(depreciation.projectedValue5yr, '$') },
+                      ].map((d, i) => (
+                        <div key={i} className="rounded-lg p-3 text-center" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
+                          <div className="text-base font-bold" style={{ color: 'var(--color-text)' }}>{d.val}</div>
+                          <div className="text-xs mt-0.5" style={{ color: 'var(--color-muted)' }}>{d.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </Section>
+                )}
+
+                {vehicle?.dealer && <p className="text-xs text-center pb-2" style={{ color: 'var(--color-muted)' }}>Listed by: {vehicle.dealer}</p>}
               </div>
             )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {pricing && (
-                <Section icon={<DollarSign size={13} />} title="Price Analysis">
-                  <Row label="Asking Price" value={fmt(pricing.askingPrice, '$')} />
-                  <Row label="KBB Value" value={fmt(pricing.kbbValue, '$')} />
-                  <Row label="Market Average" value={fmt(pricing.marketAvg, '$')} />
-                  <Row label="vs. Market" value={fmtPct(pricing.priceVsMarketPct)} color={pricing.priceVsMarketPct > 5 ? '#c0392b' : pricing.priceVsMarketPct < -5 ? '#1a7a45' : '#b7550c'} />
-                </Section>
-              )}
-              {(financing || pricing) && (
-                <FinancingEditor
-                  financing={financing}
-                  pricing={pricing}
-                  onConfirmEdits={onConfirmEdits}
-                  isReanalyzing={isReanalyzing}
-                />
-              )}
-            </div>
-
-            {depreciation && (
-              <Section icon={<TrendingDown size={13} />} title="Depreciation Curve">
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
-                  {[
-                    { label: 'Annual Rate', val: depreciation.annualRatePct != null ? `${depreciation.annualRatePct}%` : '—' },
-                    { label: '1 Year', val: fmt(depreciation.projectedValue1yr, '$') },
-                    { label: '3 Years', val: fmt(depreciation.projectedValue3yr, '$') },
-                    { label: '5 Years', val: fmt(depreciation.projectedValue5yr, '$') },
-                  ].map((d, i) => (
-                    <div key={i} className="rounded-lg p-3 text-center" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
-                      <div className="text-base font-bold" style={{ color: 'var(--color-text)' }}>{d.val}</div>
-                      <div className="text-xs mt-0.5" style={{ color: 'var(--color-muted)' }}>{d.label}</div>
-                    </div>
-                  ))}
-                </div>
-              </Section>
-            )}
-
-            {vehicle?.dealer && <p className="text-xs text-center pb-2" style={{ color: 'var(--color-muted)' }}>Listed by: {vehicle.dealer}</p>}
           </div>
         </div>
       </div>

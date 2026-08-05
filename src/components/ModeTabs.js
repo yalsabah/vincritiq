@@ -19,7 +19,7 @@ import { useChat } from "../contexts/ChatContext";
 // header also has to hold a menu button and the session-info control, and
 // "Buy a Car / Sell a Car / Find Me a Car" overflows well before that fits —
 // the third tab was being clipped mid-word. Below sm we show the short form.
-const TABS = [
+export const TABS = [
 	{
 		id: "buy",
 		label: "Buy a Car",
@@ -91,7 +91,9 @@ export default function ModeTabs() {
 						}}
 					>
 						<Icon size={14} className="flex-shrink-0" />
-						<span className="whitespace-nowrap hidden sm:inline">{tab.label}</span>
+						<span className="whitespace-nowrap hidden sm:inline">
+							{tab.label}
+						</span>
 						<span className="whitespace-nowrap sm:hidden">{tab.short}</span>
 					</button>
 				);

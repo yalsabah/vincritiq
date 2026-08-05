@@ -316,6 +316,19 @@ export async function onRequestGet({ request, env }) {
     );
   }
 
+  // Mileage — server-side (`retailListing.miles`, verified). Previously refined
+  // client-side, which meant a single fetched page of 20 could shrink to a
+  // couple of survivors, so the map zoomed into wherever those two happened to
+  // be. Filtering upstream returns a full page of real matches spread nationwide.
+  const milesMin = Number(params.get('milesMin'));
+  const milesMax = Number(params.get('milesMax'));
+  if (Number.isFinite(milesMax) && milesMax > 0) {
+    upstreamParams.set(
+      'retailListing.miles',
+      `${Number.isFinite(milesMin) && milesMin > 0 ? Math.round(milesMin) : 0}-${Math.round(milesMax)}`,
+    );
+  }
+
   const yearMin = Number(params.get('yearMin'));
   const yearMax = Number(params.get('yearMax'));
   if (Number.isFinite(yearMin) && Number.isFinite(yearMax) && yearMin > 1900) {
@@ -335,10 +348,24 @@ export async function onRequestGet({ request, env }) {
 
   if (params.get('cpo') === 'true') upstreamParams.set('retailListing.cpo', 'true');
 
+  // New/Used — `retailListing.used` is a real upstream filter (verified live:
+  // =false and =true each return only matching rows), not just a response field.
+  const condition = params.get('condition');
+  if (condition === 'new') upstreamParams.set('retailListing.used', 'false');
+  else if (condition === 'used') upstreamParams.set('retailListing.used', 'true');
+
   // Allow-listed so a bogus value can't be smuggled into the upstream query.
   const BODY_STYLES = new Set(['Car', 'SUV', 'Truck', 'Van']);
   const bodyStyle = params.get('bodyStyle');
   if (bodyStyle && BODY_STYLES.has(bodyStyle)) upstreamParams.set('vehicle.bodyStyle', bodyStyle);
+
+  // US state (two-letter) and exterior color — both verified server-side on
+  // Auto.dev (retailListing.state, vehicle.exteriorColor). Used mainly by the
+  // vehicle-finder agent, which extracts "in Arizona" / "black" from NL.
+  const state = params.get('state');
+  if (state && /^[A-Za-z]{2}$/.test(state)) upstreamParams.set('retailListing.state', state.toUpperCase());
+  const color = params.get('color');
+  if (color) upstreamParams.set('vehicle.exteriorColor', color.slice(0, 32));
 
   let upstream;
   try {
